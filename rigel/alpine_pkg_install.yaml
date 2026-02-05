@@ -60,14 +60,20 @@
         name: 
           - networkmanager
           - networkmanager-cli
+          - networkmanager-wifi  # Wichtig für WLAN-Support
+          - py3-gobject3         # Erforderlich für das nmcli-Modul
+          - dbus
         state: present
         update_cache: yes
 
-    - name: NetworkManager Dienst starten und beim Booten aktivieren
+    - name: D-Bus und NetworkManager Dienste aktivieren
       ansible.builtin.service:
-        name: networkmanager
+        name: "{{ item }}"
         state: started
-        enabled: yes
+        enabled: true
+      loop:
+        - dbus
+        - networkmanager
     
     - name: Stelle sicher, dass das Community-Repository aktiviert ist
       command: setup-apkrepos -c
