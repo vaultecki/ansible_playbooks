@@ -1,0 +1,28 @@
+---
+- name: Flatpaks nur für den aktuellen User installieren
+  hosts: all
+  become: false  # Installation erfolgt im User-Kontext, kein Root nötig
+  
+  tasks:
+    - name: Flatpak Pakete installieren
+      community.general.flatpak:
+        name: "{{ item }}"
+        state: present
+        remote: flathub
+        method: user  # Wichtig: Installiert in ~/.local/share/flatpak
+      loop:
+        - org.mozilla.firefox
+        - org.chromium.Chromium
+        - org.freecadweb.FreeCAD
+        - org.kicad.KiCad
+        - org.signal.Signal
+        - org.gajim.Gajim
+        - org.gimp.GIMP
+        - org.darktable.Darktable
+        - dev.shadow_53.spotube
+        - org.libreoffice.LibreOffice
+        - com.vscodium.codium
+        - org.keepassxc.KeePassXC
+        - com.rustdesk.RustDesk
+        - com.jetbrains.PyCharm-Community
+        - com.jetbrains.RustRover

@@ -26,6 +26,12 @@
           - mesa-dri-gallium # GPU Treiber
           - udev
         state: present
+    
+    - name: Syncthing Paket installieren
+      community.general.apk:
+        name: syncthing
+        state: present
+        update_cache: yes
 
     - name: Dienste aktivieren (udev & dropbear)
       ansible.builtin.service:
