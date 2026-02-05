@@ -1,0 +1,61 @@
+---
+- name: Setup SSHFS Autostart for COSMIC
+  hosts: alpine_nodes
+  become: yes
+  vars:
+    username: "meinuser"
+    remote_host: "dein.server.de"
+    remote_user: "remoteuser"
+    remote_path: "/pfad/am/server"
+    mount_point: "/home/{{ username }}/ssh-mount"
+
+  tasks:
+    - name: Installiere SSHFS
+      community.general.apk:
+        name: sshfs
+        state: present
+
+    - name: Erstelle Mountpoint und .ssh Verzeichnis
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0700'
+      loop:
+        - "{{ mount_point }}"
+        - "/home/{{ username }}/.ssh"
+        - "/home/{{ username }}/.config/autostart"
+
+    - name: Kopiere SSH Private Key
+      ansible.builtin.copy:
+        src: files/id_rsa  # Pfad zu deinem lokalen Key auf dem Ansible-Control-Node
+        dest: "/home/{{ username }}/.ssh/id_rsa"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+
+    - name: Erstelle ~/.ssh/config
+      ansible.builtin.copy:
+        dest: "/home/{{ username }}/.ssh/config"
+        content: |
+          Host {{ remote_host }}
+            User {{ remote_user }}
+            IdentityFile ~/.ssh/id_rsa
+            StrictHostKeyChecking no
+        owner: "{{ username }}"
+        mode: '0600'
+
+    - name: Erstelle COSMIC Autostart Eintrag für SSHFS
+      ansible.builtin.copy:
+        dest: "/home/{{ username }}/.config/autostart/mount-sshfs.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=SSHFS Mount
+          Exec=sshfs {{ remote_host }}:{{ remote_path }} {{ mount_point }} -o reconnect,allow_other
+          Icon=network-server
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+        owner: "{{ username }}"
+        mode: '0644'

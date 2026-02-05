@@ -1,0 +1,50 @@
+---
+- name: Alpine COSMIC Desktop Setup
+  hosts: alpine_nodes
+  become: yes
+
+  tasks:
+    - name: Repositories auf Edge umstellen (erforderlich für COSMIC)
+      ansible.builtin.copy:
+        dest: /etc/apk/repositories
+        content: |
+          https://dl-cdn.alpinelinux.org
+          https://dl-cdn.alpinelinux.org
+          https://dl-cdn.alpinelinux.org
+
+    - name: System-Update und Installation der Pakete
+      community.general.apk:
+        update_cache: yes
+        upgrade: yes
+        name:
+          - cosmic-session
+          - cosmic-greeter
+          - flatpak
+          - rustybox
+          - dropbear
+          - dropbear-ssh
+          - mesa-dri-gallium # GPU Treiber
+          - udev
+        state: present
+
+    - name: Dienste aktivieren (udev & dropbear)
+      ansible.builtin.service:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop: [udev, dropbear]
+
+    - name: Rustybox als Standard-Shell für Nutzer setzen
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        shell: /usr/bin/rustybox
+
+    - name: Grafischen Login (Greetd) konfigurieren
+      ansible.builtin.service:
+        name: greetd
+        enabled: yes
+        state: started
+
+    - name: Flatpak Alpine Repo hinzufügen
+      ansible.builtin.command: 
+        cmd: flatpak remote-add --if-not-exists flathub https://flathub.org

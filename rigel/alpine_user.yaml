@@ -1,0 +1,49 @@
+---
+- name: Setup User with Auto-Mount Encrypted Home
+  hosts: alpine_nodes
+  become: yes
+  vars:
+    username: "meinuser"
+    user_password: "geheimespasswort" # In Produktion: ansible-vault nutzen!
+
+  tasks:
+    - name: Benötigte Pakete installieren
+      community.general.apk:
+        name: [ecryptfs-utils, pam-ecryptfs, rsync]
+        state: present
+
+    - name: Kernel-Modul laden
+      community.general.modprobe:
+        name: ecryptfs
+        state: present
+
+    - name: Nutzer erstellen
+      ansible.builtin.user:
+        name: "{{ username }}"
+        password: "{{ user_password | password_hash('sha512') }}"
+        shell: /bin/zsh
+        create_home: yes
+
+    - name: eCryptfs Verzeichnisstruktur initialisieren
+      ansible.builtin.shell: |
+        echo "{{ user_password }}" | ecryptfs-setup-private -u {{ username }} --nopwcheck --login
+      args:
+        creates: "/home/{{ username }}/.ecryptfs"
+
+    - name: PAM Konfiguration - Auth (Passwort-Übergabe)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/base-auth
+        line: "auth    required    pam_ecryptfs.so unwrap"
+        insert_before: "auth    required    pam_unix.so"
+
+    - name: PAM Konfiguration - Session (Automatischer Mount)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/base-session
+        line: "session required    pam_ecryptfs.so layout=map"
+        state: present
+
+    - name: PAM Konfiguration - Password (Synchronisation)
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/base-password
+        line: "password required    pam_ecryptfs.so"
+        state: present
