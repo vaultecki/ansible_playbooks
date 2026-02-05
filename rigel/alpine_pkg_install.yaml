@@ -54,3 +54,73 @@
     - name: Flatpak Alpine Repo hinzufügen
       ansible.builtin.command: 
         cmd: flatpak remote-add --if-not-exists flathub https://flathub.org
+    
+    - name: NetworkManager Pakete installieren
+      community.general.apk:
+        name: 
+          - networkmanager
+          - networkmanager-cli
+        state: present
+        update_cache: yes
+
+    - name: NetworkManager Dienst starten und beim Booten aktivieren
+      ansible.builtin.service:
+        name: networkmanager
+        state: started
+        enabled: yes
+    
+    - name: Stelle sicher, dass das Community-Repository aktiviert ist
+      command: setup-apkrepos -c
+      register: repo_result
+      changed_when: "'added' in repo_result.stdout"
+
+    - name: Installiere Audio-Pakete
+      community.general.apk:
+        name:
+          - pipewire
+          - wireplumber
+          - pipewire-pulse
+          - pipewire-alsa
+          - alsa-utils
+        state: present
+        update_cache: yes
+
+    - name: Fuege User zur Gruppe 'audio' und 'video' hinzu
+      user:
+        name: "{{ ansible_user }}"
+        groups: audio,video
+        append: yes
+
+    - name: Erstelle Konfigurationsverzeichnisse (optional für Anpassungen)
+      shell: |
+        cp -a /usr/share/pipewire /etc/
+        cp -a /usr/share/wireplumber /etc/
+      args:
+        creates: /etc/pipewire/pipewire.conf
+
+    - name: Aktiviere PipeWire und WirePlumber als User-Services
+      # Benötigt Alpine 3.22+ für native User-Services
+      shell: |
+        rc-update -U add pipewire gui
+        rc-update -U add wireplumber gui
+        rc-update -U add pipewire-pulse gui
+      become: no
+    
+    - name: Update Paket-Index und installiere Fish & Alacritty
+      community.general.apk:
+        name:
+          - fish
+          - alacritty
+        state: present
+        update_cache: yes
+
+    - name: Setze Fish als Standard-Shell für den Benutzer
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        shell: /usr/bin/fish
+
+    - name: Installiere Fish-Completions für Alacritty (optional)
+      community.general.apk:
+        name: alacritty-fish-completion
+        state: present
+    
