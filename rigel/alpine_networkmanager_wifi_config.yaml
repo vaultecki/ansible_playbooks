@@ -1,0 +1,15 @@
+- name: WLAN-Netzwerke vordefinieren
+  hosts: all
+  become: true
+  tasks:
+    - name: WLAN-Verbindung hinzufügen
+      community.general.nmcli:
+        conn_name: "MeinHeimnetzwerk"
+        ifname: "wlan0"  # Deine WLAN-Schnittstelle
+        type: wifi
+        ssid: "SSID_NAME"
+        wifi_sec:
+          key-mgmt: wpa-psk
+          psk: "DEIN_PASSWORT"
+        state: present
+        autoconnect: true
