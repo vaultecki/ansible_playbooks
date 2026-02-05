@@ -1,0 +1,53 @@
+---
+- name: Btrfs Optimierung und Systemkonfiguration für Alpine
+  hosts: all
+  become: true
+  vars:
+    btrfs_mountpoint: "/"
+    compression_opt: "compress=zstd:3"
+
+  tasks:
+    - name: Btrfs-Progs und Deduplizierungstools installieren
+      community.general.apk:
+        name: 
+          - btrfs-progs
+          - duperemove
+        state: present
+        update_cache: yes
+
+    - name: Btrfs Modul in /etc/modules eintragen
+      ansible.builtin.lineinfile:
+        path: /etc/modules
+        line: btrfs
+        create: yes
+
+    - name: Btrfs in mkinitfs.conf Features hinzufügen
+      ansible.builtin.replace:
+        path: /etc/mkinitfs/mkinitfs.conf
+        regexp: '^features="((?!.*btrfs).*)"'
+        replace: 'features="\1 btrfs"'
+      register: mkinitfs_config
+
+    - name: Initramfs neu generieren
+      ansible.builtin.command: mkinitfs
+      when: mkinitfs_config.changed
+      notify: "System-Information"
+
+    - name: Komprimierung in /etc/fstab aktivieren
+      ansible.posix.mount:
+        path: "{{ btrfs_mountpoint }}"
+        state: mounted
+        fstype: btrfs
+        opts: "defaults,{{ compression_opt }}"
+
+    - name: Wöchentlichen Cron-Job für Deduplizierung einrichten
+      ansible.builtin.cron:
+        name: "Btrfs Deduplizierung"
+        user: "root"
+        job: "/usr/bin/duperemove -dr {{ btrfs_mountpoint }}"
+        special_time: "weekly"
+
+  handlers:
+    - name: System-Information
+      ansible.builtin.debug:
+        msg: "Initramfs wurde aktualisiert. Ein Neustart wird empfohlen, um sicherzustellen, dass alle Module korrekt geladen werden."
