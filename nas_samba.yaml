@@ -1,0 +1,230 @@
+---
+# Samba für Alpine NAS
+# =====================
+# Richtet Samba-Freigaben für die ZFS-Datasets ein und legt einen
+# dedizierten Samba-Benutzer an.
+#
+# Freigaben:
+#   \\nas\media     – Lesen für alle im Netz (kein Passwort)
+#   \\nas\backups   – Nur für authentifizierten Samba-User
+#   \\nas\homes     – Persönliches Home des Samba-Users (Lesen + Schreiben)
+#
+# Vault-Datei benötigt:
+#   vault_samba_user_password: "dein_samba_passwort"
+#
+# Hinweis: Samba-Passwörter werden in einer eigenen Datenbank (smbpasswd)
+# verwaltet und sind UNABHÄNGIG vom Linux-Systempasswort.
+#
+# Ausführen: ansible-playbook nas_samba.yaml --ask-vault-pass
+
+- name: Samba einrichten (Alpine NAS)
+  hosts: nas_nodes
+  become: yes
+  vars:
+    samba_user: "sambauser"
+    samba_password: "{{ vault_samba_user_password }}"
+    samba_workgroup: "WORKGROUP"
+    samba_server_string: "Alpine NAS"
+    samba_log_file: "/var/log/samba/log.%m"
+    samba_log_level: 1
+
+    # ZFS-Mountpoints aus nas_openzfs.yaml
+    share_media:    "/mnt/media"
+    share_backups:  "/mnt/backups"
+    share_homes:    "/mnt/homes"   # Persönliches Verzeichnis des Samba-Users
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Samba installieren
+    # -------------------------------------------------------------------------
+
+    - name: Samba und Tools installieren
+      community.general.apk:
+        name:
+          - samba
+          - samba-client      # smbclient für Tests
+          - samba-common-tools # smbpasswd, pdbedit
+        state: present
+        update_cache: yes
+
+    # -------------------------------------------------------------------------
+    # 2. Samba-User anlegen
+    # -------------------------------------------------------------------------
+
+    # Zuerst einen regulären Linux-Account anlegen (Samba-Voraussetzung),
+    # dann den Samba-Account daran binden.
+    - name: Linux-Account für Samba-User anlegen (kein Login)
+      ansible.builtin.user:
+        name: "{{ samba_user }}"
+        shell: /sbin/nologin
+        create_home: no
+        password: "!"           # Login gesperrt – nur Samba-Auth erlaubt
+        state: present
+
+    - name: Samba-Passwort setzen (idempotent via smbpasswd)
+      ansible.builtin.shell: |
+        echo -e "{{ samba_password }}\n{{ samba_password }}" | smbpasswd -a -s {{ samba_user }}
+        smbpasswd -e {{ samba_user }}
+      no_log: true              # Passwort nicht in Ansible-Logs ausgeben
+      changed_when: true        # smbpasswd hat keinen Exit-Code für "already set"
+
+    # -------------------------------------------------------------------------
+    # 3. Verzeichnisse und Berechtigungen
+    # -------------------------------------------------------------------------
+
+    - name: Persönliches Samba-Home-Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "{{ share_homes }}"
+        state: directory
+        owner: "{{ samba_user }}"
+        group: "{{ samba_user }}"
+        mode: '0750'
+
+    - name: Samba-User Schreibrecht auf sein Home-Verzeichnis geben
+      ansible.builtin.file:
+        path: "{{ share_homes }}"
+        owner: "{{ samba_user }}"
+        group: "{{ samba_user }}"
+        recurse: yes
+
+    - name: Log-Verzeichnis für Samba anlegen
+      ansible.builtin.file:
+        path: /var/log/samba
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    # -------------------------------------------------------------------------
+    # 4. smb.conf konfigurieren
+    # -------------------------------------------------------------------------
+
+    - name: smb.conf schreiben
+      ansible.builtin.copy:
+        dest: /etc/samba/smb.conf
+        mode: '0644'
+        content: |
+          [global]
+            workgroup           = {{ samba_workgroup }}
+            server string       = {{ samba_server_string }}
+            netbios name        = NAS
+
+            # Protokoll: SMB2 minimum – SMB1 ist unsicher und deaktiviert
+            server min protocol = SMB2
+            server max protocol = SMB3
+
+            # Nur lokales Netz darf sich verbinden
+            hosts allow         = 192.168.1. 127.0.0.1
+            hosts deny          = 0.0.0.0/0
+
+            # Sicherheit
+            security            = user
+            encrypt passwords   = yes
+            # Gastzugang nur für die Media-Freigabe (map to guest)
+            map to guest        = bad user
+
+            # Logging
+            log file            = {{ samba_log_file }}
+            log level           = {{ samba_log_level }}
+            max log size        = 1000
+
+            # Performance-Tuning
+            socket options      = TCP_NODELAY IPTOS_LOWDELAY SO_RCVBUF=131072 SO_SNDBUF=131072
+            read raw            = yes
+            write raw           = yes
+            use sendfile        = yes
+            aio read size       = 16384
+            aio write size      = 16384
+
+          # ------------------------------------------------------------------
+          # Medien-Freigabe – lesend für alle (kein Passwort nötig)
+          # ------------------------------------------------------------------
+          [media]
+            comment             = Medien
+            path                = {{ share_media }}
+            browseable          = yes
+            read only           = yes
+            guest ok            = yes
+            # Zeichensatz für Umlaute in Dateinamen
+            unix charset        = UTF-8
+            dos charset         = CP850
+
+          # ------------------------------------------------------------------
+          # Backup-Freigabe – nur für authentifizierten Samba-User
+          # ------------------------------------------------------------------
+          [backups]
+            comment             = Backups
+            path                = {{ share_backups }}
+            browseable          = yes
+            read only           = no
+            guest ok            = no
+            valid users         = {{ samba_user }}
+            create mask         = 0660
+            directory mask      = 0770
+            unix charset        = UTF-8
+
+          # ------------------------------------------------------------------
+          # Persönliches Home des Samba-Users
+          # ------------------------------------------------------------------
+          [homes]
+            comment             = Persoenliches Verzeichnis
+            path                = {{ share_homes }}
+            browseable          = no     # Nicht in der Netzwerkübersicht sichtbar
+            read only           = no
+            guest ok            = no
+            valid users         = {{ samba_user }}
+            create mask         = 0660
+            directory mask      = 0700
+            unix charset        = UTF-8
+      notify: Samba neu starten
+
+    - name: smb.conf Syntax prüfen
+      ansible.builtin.command: testparm -s /etc/samba/smb.conf
+      register: testparm_result
+      changed_when: false
+      failed_when: testparm_result.rc != 0
+
+    - name: testparm Ergebnis anzeigen
+      ansible.builtin.debug:
+        msg: "{{ testparm_result.stdout_lines }}"
+
+    # -------------------------------------------------------------------------
+    # 5. Samba-Dienste aktivieren (OpenRC)
+    # -------------------------------------------------------------------------
+
+    - name: smbd aktivieren und starten
+      ansible.builtin.service:
+        name: smbd
+        enabled: yes
+        state: started
+
+    - name: nmbd aktivieren und starten (NetBIOS-Namensauflösung)
+      ansible.builtin.service:
+        name: nmbd
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------------
+    # 6. Verbindungshinweis ausgeben
+    # -------------------------------------------------------------------------
+
+    - name: Verbindungshinweis anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Samba läuft auf {{ inventory_hostname }} ({{ ansible_host }}).
+
+          Freigaben erreichbar unter:
+            \\{{ ansible_host }}\media    – Lesen ohne Passwort
+            \\{{ ansible_host }}\backups  – Benutzer: {{ samba_user }}
+            \\{{ ansible_host }}\homes    – Benutzer: {{ samba_user }}
+
+          Linux/macOS:
+            smb://{{ ansible_host }}/media
+            smb://{{ ansible_host }}/backups
+
+  handlers:
+    - name: Samba neu starten
+      ansible.builtin.service:
+        name: smbd
+        state: restarted

@@ -1,0 +1,48 @@
+# ~/.ssh/config
+# =============
+# SSH-Konfiguration für den Ansible Control-Node
+# Beide Zielrechner mit Alias, Key und Optionen vordefiniert.
+#
+# Verwendung:
+#   ssh alpine-desktop
+#   ssh arch-desktop
+#   ansible all -i inventory.yaml -m ping
+
+# ------------------------------------------------------------------
+# Alpine Linux Desktop
+# ------------------------------------------------------------------
+Host alpine-desktop
+    HostName 192.168.1.10               # IP-Adresse anpassen
+    User meinuser
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    # Nach erstem Verbindungsaufbau den Fingerprint hier eintragen:
+    # UserKnownHostsFile ~/.ssh/known_hosts
+
+# ------------------------------------------------------------------
+# Arch / CachyOS Desktop
+# ------------------------------------------------------------------
+Host arch-desktop
+    HostName 192.168.1.11               # IP-Adresse anpassen
+    User meinuser
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+
+# ------------------------------------------------------------------
+# Gemeinsame Sicherheitseinstellungen für alle lokalen Hosts
+# ------------------------------------------------------------------
+Host 192.168.1.*
+    # Nur starke Algorithmen erlauben
+    KexAlgorithms curve25519-sha256,diffie-hellman-group16-sha512
+    HostKeyAlgorithms ssh-ed25519,rsa-sha2-512
+    Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+    MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+    # Verbindungs-Multiplexing – beschleunigt mehrere aufeinanderfolgende
+    # SSH-Verbindungen (z.B. während eines Ansible-Runs erheblich)
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m

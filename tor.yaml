@@ -1,0 +1,239 @@
+---
+# Tor mit Hidden Service – alle Systeme
+# ======================================
+# Dieses Playbook läuft auf ALLEN vier Systemen (hosts: all) und erkennt
+# das jeweilige Init-System automatisch:
+#
+#   Alpine Desktop / NAS  →  OpenRC  (apk, rc-update)
+#   Arch / CachyOS        →  systemd (pacman, systemctl)
+#   Raspberry Pi          →  systemd (apt, systemctl)
+#
+# Was wird eingerichtet:
+#   - Tor als anonymisierender SOCKS5-Proxy (Port 9050)
+#   - Versteckter Dienst (Hidden Service) pro Host
+#     → Standardmäßig auf Port 80 → localhost:80 weitergeleitet
+#     → Port und Ziel in den vars anpassen
+#   - Autostart beim Systemstart über den jeweiligen Init-Manager
+#   - torrc mit sinnvollen Sicherheits-Defaults
+#
+# Nach dem ersten Start generiert Tor automatisch:
+#   /var/lib/tor/hidden_service/hostname    ← .onion-Adresse
+#   /var/lib/tor/hidden_service/private_key ← NIEMALS teilen!
+#
+# Ausführen: ansible-playbook tor.yaml
+# Nur eine Gruppe: ansible-playbook tor.yaml --limit nas_nodes
+
+- name: Tor mit Hidden Service einrichten (alle Systeme)
+  hosts: all
+  become: yes
+
+  vars:
+    tor_socks_port: 9050
+    tor_control_port: 9051     # Für externe Tools (nyx, stem) – 0 = deaktiviert
+    tor_data_dir: "/var/lib/tor"
+    tor_config_path: "/etc/tor/torrc"
+    tor_log_dir: "/var/log/tor"
+    tor_user: "tor"             # Systemnutzer unter dem Tor läuft
+
+    # Hidden Service Konfiguration
+    # Port:   Eingehender Port der .onion-Adresse (was Clients verbinden)
+    # Target: Wohin Tor lokal weiterleitet (z.B. SSH, Webserver, Kodi-Remote)
+    hidden_service_dir: "{{ tor_data_dir }}/hidden_service"
+    hidden_service_port: 80
+    hidden_service_target: "127.0.0.1:80"
+    # Für SSH-Zugang über Tor (parallel zum normalen Port):
+    # hidden_service_port: 22
+    # hidden_service_target: "127.0.0.1:22"
+
+    # Tor-Netzwerk-Einstellungen
+    # ExitNode deaktiviert (kein Exit-Relay) – nur Client + Hidden Service
+    tor_exit_policy: "reject *:*"
+
+  tasks:
+
+    # =========================================================================
+    # BLOCK A: Alpine Linux (OpenRC + apk)
+    # Gilt für: alpine-desktop, alpine-nas
+    # =========================================================================
+    - name: "[ Alpine ] Tor installieren"
+      community.general.apk:
+        name: tor
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Alpine"
+
+    # =========================================================================
+    # BLOCK B: Arch / CachyOS (systemd + pacman)
+    # =========================================================================
+    - name: "[ Arch ] Tor installieren"
+      community.general.pacman:
+        name: tor
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Archlinux"
+
+    # =========================================================================
+    # BLOCK C: Debian / Raspberry Pi OS (systemd + apt)
+    # =========================================================================
+    - name: "[ Debian ] Tor Apt-Repository hinzufügen (aktuelle Tor-Version)"
+      ansible.builtin.deb822_repository:
+        name: tor-project
+        types: deb
+        uris: "https://deb.torproject.org/torproject.org"
+        suites: "{{ ansible_distribution_release }}"
+        components: main
+        signed_by: "https://deb.torproject.org/torproject.org/A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89.asc"
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: "[ Debian ] Tor installieren"
+      ansible.builtin.apt:
+        name:
+          - tor
+          - deb.torproject.org-keyring
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    # =========================================================================
+    # Gemeinsam: Verzeichnisse und Konfiguration (alle Systeme)
+    # =========================================================================
+
+    - name: Tor Daten-Verzeichnis sicherstellen
+      ansible.builtin.file:
+        path: "{{ tor_data_dir }}"
+        state: directory
+        owner: "{{ tor_user }}"
+        group: "{{ tor_user }}"
+        mode: '0700'
+
+    - name: Hidden Service Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "{{ hidden_service_dir }}"
+        state: directory
+        owner: "{{ tor_user }}"
+        group: "{{ tor_user }}"
+        # KRITISCH: 0700 – nur tor-User darf lesen. Sonst startet Tor nicht.
+        mode: '0700'
+
+    - name: Log-Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "{{ tor_log_dir }}"
+        state: directory
+        owner: "{{ tor_user }}"
+        group: "{{ tor_user }}"
+        mode: '0750'
+
+    - name: torrc schreiben
+      ansible.builtin.copy:
+        dest: "{{ tor_config_path }}"
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          # torrc – Ansible-verwaltet, nicht manuell bearbeiten
+          # Generiert für: {{ inventory_hostname }}
+
+          # Basis
+          User {{ tor_user }}
+          DataDirectory {{ tor_data_dir }}
+          PidFile /var/run/tor/tor.pid
+
+          # SOCKS5-Proxy (nur lokal – kein offener Proxy!)
+          SocksPort 127.0.0.1:{{ tor_socks_port }}
+          SocksPolicy accept 127.0.0.1
+          SocksPolicy reject *
+
+          # Control Port (für nyx/stem – auf 0 setzen um zu deaktivieren)
+          ControlPort {{ tor_control_port }}
+          CookieAuthentication 1
+
+          # Kein Exit-Relay
+          ExitPolicy {{ tor_exit_policy }}
+
+          # Logging
+          Log notice file {{ tor_log_dir }}/notices.log
+          Log warn file  {{ tor_log_dir }}/warnings.log
+
+          # Hidden Service
+          HiddenServiceDir {{ hidden_service_dir }}
+          HiddenServicePort {{ hidden_service_port }} {{ hidden_service_target }}
+          # V3 Onion Services (Standard seit Tor 0.3.5 – sicherer als V2)
+          HiddenServiceVersion 3
+
+          # Sicherheits-Optionen
+          # Verhindert DNS-Leaks über Tor
+          DNSPort 127.0.0.1:9053
+          AutomapHostsOnResolve 1
+          AutomapHostsSuffixes .onion,.exit
+
+          # Bandbreite begrenzen (NAS/Pi schonen – auf 0 für unbegrenzt setzen)
+          RelayBandwidthRate  1 MB
+          RelayBandwidthBurst 2 MB
+      notify: Tor neu starten
+
+    # =========================================================================
+    # Autostart: OpenRC (Alpine Desktop + NAS)
+    # =========================================================================
+
+    - name: "[ Alpine / OpenRC ] Tor beim Systemstart aktivieren"
+      ansible.builtin.service:
+        name: tor
+        enabled: yes
+        state: started
+      when: ansible_os_family == "Alpine"
+
+    # =========================================================================
+    # Autostart: systemd (Arch + Debian/Pi)
+    # =========================================================================
+
+    - name: "[ systemd ] Tor aktivieren und starten"
+      ansible.builtin.systemd:
+        name: tor
+        enabled: yes
+        state: started
+        daemon_reload: yes
+      when: ansible_os_family in ["Archlinux", "Debian"]
+
+    # =========================================================================
+    # .onion-Adresse ausgeben (erst nach dem ersten Start verfügbar)
+    # =========================================================================
+
+    - name: Warten bis Tor die .onion-Adresse generiert hat
+      ansible.builtin.wait_for:
+        path: "{{ hidden_service_dir }}/hostname"
+        timeout: 60
+
+    - name: .onion-Adresse auslesen
+      ansible.builtin.slurp:
+        src: "{{ hidden_service_dir }}/hostname"
+      register: onion_hostname
+
+    - name: .onion-Adresse anzeigen
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          Hidden Service auf {{ inventory_hostname }} ist bereit!
+
+          .onion-Adresse : {{ onion_hostname.content | b64decode | trim }}
+          Tor SOCKS5-Proxy: 127.0.0.1:{{ tor_socks_port }}
+
+          WICHTIG: Den privaten Schlüssel sichern:
+            {{ hidden_service_dir }}/hs_ed25519_secret_key
+          Dieser Key ist die Identität des Hidden Service.
+          Bei Verlust ist die .onion-Adresse unwiederbringlich weg!
+          ============================================================
+
+    - name: Privaten Hidden-Service-Key lokal sichern
+      ansible.builtin.fetch:
+        src: "{{ hidden_service_dir }}/hs_ed25519_secret_key"
+        dest: "fetched_keys/{{ inventory_hostname }}_tor_hs_secret_key"
+        flat: yes
+      # ACHTUNG: Diese Datei enthält den privaten Schlüssel des Hidden Service.
+      # Sicher verwahren – idealerweise verschlüsselt (ansible-vault oder GPG).
+
+  handlers:
+    - name: Tor neu starten
+      ansible.builtin.service:
+        name: tor
+        state: restarted
