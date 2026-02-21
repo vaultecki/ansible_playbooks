@@ -1,0 +1,94 @@
+---
+# SSH-Key vorab mit dem arch_ssh_keys.yaml Playbook deployen!
+# Fingerprint ermitteln mit: ssh-keyscan dein.server.de
+
+- name: SSHFS Autostart für COSMIC einrichten (Arch / CachyOS)
+  hosts: arch_nodes
+  become: yes
+  vars:
+    username: "meinuser"
+    remote_host: "dein.server.de"
+    remote_user: "remoteuser"
+    remote_path: "/pfad/am/server"
+    mount_point: "/home/{{ username }}/ssh-mount"
+    # Fingerprint vorab mit ssh-keyscan ermitteln und hier eintragen:
+    remote_host_key: "dein.server.de ssh-ed25519 AAAA..."
+
+  tasks:
+
+    - name: SSHFS installieren
+      community.general.pacman:
+        name: sshfs
+        state: present
+
+    - name: Verzeichnisse anlegen (Mountpoint, .ssh, autostart)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0700'
+      loop:
+        - "{{ mount_point }}"
+        - "/home/{{ username }}/.ssh"
+        - "/home/{{ username }}/.config/autostart"
+
+    - name: SSH Private Key deployen
+      ansible.builtin.copy:
+        # In Produktion: ansible-vault encrypt files/id_rsa
+        src: files/id_rsa
+        dest: "/home/{{ username }}/.ssh/id_rsa"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+
+    - name: Server-Fingerprint in known_hosts hinterlegen
+      ansible.builtin.known_hosts:
+        path: "/home/{{ username }}/.ssh/known_hosts"
+        name: "{{ remote_host }}"
+        key: "{{ remote_host_key }}"
+        state: present
+
+    - name: Besitzer der known_hosts setzen
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.ssh/known_hosts"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+
+    - name: SSH-Konfiguration erstellen
+      ansible.builtin.copy:
+        dest: "/home/{{ username }}/.ssh/config"
+        content: |
+          Host {{ remote_host }}
+            User {{ remote_user }}
+            IdentityFile ~/.ssh/id_rsa
+        owner: "{{ username }}"
+        mode: '0600'
+
+    - name: FUSE allow_other in /etc/fuse.conf aktivieren
+      ansible.builtin.lineinfile:
+        path: /etc/fuse.conf
+        line: "user_allow_other"
+        create: yes
+        mode: '0644'
+
+    - name: Benutzer zur fuse-Gruppe hinzufügen (Arch-spezifisch)
+      ansible.builtin.user:
+        name: "{{ username }}"
+        groups: fuse
+        append: yes
+
+    - name: COSMIC Autostart-Eintrag für SSHFS erstellen
+      ansible.builtin.copy:
+        dest: "/home/{{ username }}/.config/autostart/mount-sshfs.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=SSHFS Mount
+          Exec=sshfs {{ remote_host }}:{{ remote_path }} {{ mount_point }} -o reconnect,allow_other
+          Icon=network-server
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+        owner: "{{ username }}"
+        mode: '0644'

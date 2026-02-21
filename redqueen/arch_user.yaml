@@ -1,0 +1,66 @@
+---
+# Vault-Datei anlegen: ansible-vault create group_vars/all/vault.yaml
+# Inhalt: vault_user_password: "dein_passwort"
+# Ausführen: ansible-playbook arch_user.yaml --ask-vault-pass
+
+- name: Benutzer mit verschlüsseltem Home einrichten (Arch / CachyOS)
+  hosts: arch_nodes
+  become: yes
+  vars:
+    username: "meinuser"
+    user_password: "{{ vault_user_password }}"
+
+  tasks:
+
+    - name: Benötigte Pakete installieren
+      community.general.pacman:
+        name:
+          - ecryptfs-utils   # Enthält auf Arch auch das PAM-Modul
+          - rsync
+          - fish
+        state: present
+
+    - name: ecryptfs Kernel-Modul laden
+      community.general.modprobe:
+        name: ecryptfs
+        state: present
+
+    - name: ecryptfs Modul dauerhaft in /etc/modules-load.d eintragen
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/ecryptfs.conf
+        content: "ecryptfs\n"
+        mode: '0644'
+
+    - name: Benutzer anlegen
+      ansible.builtin.user:
+        name: "{{ username }}"
+        password: "{{ user_password | password_hash('sha512') }}"
+        shell: /usr/bin/fish
+        create_home: yes
+        groups: wheel        # wheel-Gruppe für sudo-Zugriff auf Arch
+        append: yes
+
+    - name: eCryptfs Verzeichnisstruktur initialisieren
+      ansible.builtin.shell: |
+        echo "{{ user_password }}" | ecryptfs-setup-private -u {{ username }} --nopwcheck --login
+      args:
+        creates: "/home/{{ username }}/.ecryptfs"
+
+    # Arch verwendet /etc/pam.d/system-auth statt base-auth / base-session
+    - name: PAM system-auth – ecryptfs bei Login entschlüsseln
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        line: "auth    required    pam_ecryptfs.so unwrap"
+        insert_before: "auth    required    pam_unix.so"
+
+    - name: PAM system-auth – Session automatisch mounten
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        line: "session required    pam_ecryptfs.so"
+        insertafter: "session    required    pam_unix.so"
+
+    - name: PAM system-auth – Passwortänderung synchronisieren
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        line: "password required    pam_ecryptfs.so"
+        insertbefore: "password    required    pam_unix.so"

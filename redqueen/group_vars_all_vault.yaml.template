@@ -1,0 +1,41 @@
+# Ansible Vault - Vorlage für sensible Variablen
+# ================================================
+# Gilt für: Alpine Linux (alpine_*.yaml) UND Arch / CachyOS (arch_*.yaml)
+# ================================================
+# Diese Datei ZUERST befüllen, dann verschlüsseln:
+#
+#   ansible-vault encrypt group_vars/all/vault.yaml
+#
+# Entschlüsseln zum Bearbeiten:
+#   ansible-vault edit group_vars/all/vault.yaml
+#
+# Beim Ausführen der Playbooks angeben:
+#   ansible-playbook <playbook>.yaml --ask-vault-pass
+#
+# Oder mit einer Passwort-Datei (niemals einchecken!):
+#   echo "mein_vault_passwort" > ~/.vault_pass && chmod 600 ~/.vault_pass
+#   ansible-playbook <playbook>.yaml --vault-password-file ~/.vault_pass
+#
+# Tipp: ~/.vault_pass in .gitignore aufnehmen!
+
+# --- Benutzer (alpine_user.yaml) ---
+vault_user_password: "HIER_BENUTZER_PASSWORT_EINTRAGEN"
+
+# --- WLAN (alpine_networkmanager_wifi_config.yaml) ---
+vault_wifi_password: "HIER_WLAN_PASSWORT_EINTRAGEN"
+
+# --- SSH Keys (alpine_ssh_keys.yaml) ---
+
+# Passphrase für den auf dem Zielhost generierten privaten SSH-Key.
+# Leer lassen ("") wenn der Key für automatische Prozesse (z.B. SSHFS-Autostart)
+# ohne Passphrase auskommen muss.
+vault_ssh_key_passphrase: "HIER_KEY_PASSPHRASE_EINTRAGEN_ODER_LEER_LASSEN"
+
+# Weitere Public Keys, die in authorized_keys eingetragen werden sollen.
+# Nützlich für Team-Zugang oder Backup-Zugang von einem zweiten Rechner.
+# Format: eine YAML-Liste von vollständigen Public-Key-Strings.
+# Ermitteln mit: cat ~/.ssh/id_ed25519.pub
+vault_additional_pubkeys:
+  - "ssh-ed25519 AAAA... benutzer1@rechner1"
+  - "ssh-ed25519 AAAA... benutzer2@rechner2"
+  # Weitere Keys einfach als zusätzliche Zeilen anhängen

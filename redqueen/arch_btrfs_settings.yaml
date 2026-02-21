@@ -1,0 +1,84 @@
+---
+# Unterschiede zu Alpine:
+#  - mkinitcpio statt mkinitfs
+#  - btrfs-Modul wird in mkinitcpio.conf unter MODULES eingetragen
+#  - duperemove ist auf Arch im AUR (paru -S duperemove) – auf CachyOS
+#    direkt in den Community-Repos verfügbar
+
+- name: Btrfs Optimierung und Systemkonfiguration (Arch / CachyOS)
+  hosts: arch_nodes
+  become: true
+  vars:
+    btrfs_mountpoint: "/"
+    compression_opt: "compress=zstd:3"
+    duperemove_min_size: "1M"
+    duperemove_io_threads: "2"
+
+  tasks:
+
+    - name: btrfs-progs installieren
+      community.general.pacman:
+        name: btrfs-progs
+        state: present
+        update_cache: yes
+
+    # duperemove: auf CachyOS aus den Repos, auf plain Arch aus dem AUR.
+    # Für plain Arch den auskommentierten paru-Task aktivieren.
+    - name: duperemove installieren (CachyOS / Repos)
+      community.general.pacman:
+        name: duperemove
+        state: present
+      ignore_errors: yes        # Schlägt auf plain Arch fehl (AUR-Paket)
+      register: duperemove_pkg
+
+    # Auskommentieren für plain Arch (paru muss installiert sein):
+    # - name: duperemove aus AUR installieren (plain Arch)
+    #   ansible.builtin.shell: paru -S --noconfirm duperemove
+    #   become: no
+    #   when: duperemove_pkg is failed
+
+    # Arch: btrfs-Modul in mkinitcpio.conf unter MODULES eintragen
+    - name: btrfs zu MODULES in mkinitcpio.conf hinzufügen
+      ansible.builtin.replace:
+        path: /etc/mkinitcpio.conf
+        regexp: '^MODULES=\(([^)]*)\)'
+        replace: 'MODULES=(\1 btrfs)'
+      register: mkinitcpio_config
+
+    # Doppelte Leerzeichen in MODULES bereinigen
+    - name: Doppelte Leerzeichen in MODULES bereinigen
+      ansible.builtin.replace:
+        path: /etc/mkinitcpio.conf
+        regexp: 'MODULES=\(\s+'
+        replace: 'MODULES=('
+      when: mkinitcpio_config.changed
+
+    - name: Initramfs mit mkinitcpio neu generieren
+      ansible.builtin.command: mkinitcpio -P
+      when: mkinitcpio_config.changed
+      notify: System-Information
+
+    - name: Komprimierung in /etc/fstab aktivieren
+      ansible.posix.mount:
+        path: "{{ btrfs_mountpoint }}"
+        state: mounted
+        fstype: btrfs
+        opts: "defaults,{{ compression_opt }}"
+
+    - name: Wöchentlichen Cron-Job für Deduplizierung einrichten
+      ansible.builtin.cron:
+        name: "Btrfs Deduplizierung"
+        user: "root"
+        job: >-
+          /usr/bin/duperemove
+          -dr
+          --min-size={{ duperemove_min_size }}
+          --io-threads={{ duperemove_io_threads }}
+          --hashfile=/var/cache/duperemove.hash
+          {{ btrfs_mountpoint }}
+        special_time: "weekly"
+
+  handlers:
+    - name: System-Information
+      ansible.builtin.debug:
+        msg: "Initramfs wurde aktualisiert. Bitte den Rechner neu starten."

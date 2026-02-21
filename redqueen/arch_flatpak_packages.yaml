@@ -1,0 +1,41 @@
+---
+- name: Flatpaks für den aktuellen User installieren (Arch / CachyOS)
+  hosts: arch_nodes
+  become: false  # User-Kontext
+
+  tasks:
+
+    - name: Flatpak Pakete installieren
+      community.general.flatpak:
+        name: "{{ item }}"
+        state: present
+        remote: flathub
+        method: user  # Installiert in ~/.local/share/flatpak
+      loop:
+        - org.mozilla.firefox
+        - org.chromium.Chromium
+        - org.freecad.FreeCAD
+        - org.kicad.KiCad
+        - org.signal.Signal
+        - org.gajim.Gajim
+        - org.gimp.GIMP
+        - org.darktable.Darktable
+        - dev.shadow_53.Spotube
+        - org.libreoffice.LibreOffice
+        - com.vscodium.codium
+        - org.keepassxc.KeePassXC
+        - com.rustdesk.RustDesk
+        - com.jetbrains.PyCharm-Community
+        - com.jetbrains.RustRover
+        - tv.kodi.Kodi
+        - org.horizon_eda.HorizonEDA
+        - org.octave.Octave
+        - io.github.wxmaxima_developers.wxMaxima
+        - org.scilab.Scilab
+        - org.gnome.Shotwell
+        - io.github.seadve.Kooha
+        - org.adishatz.Screenshot
+        - org.gnome.Evince
+        - com.github.xournalpp.xournalpp
+        - com.cassidyjames.butler
+        - io.github.flattool.Warehouse

@@ -1,0 +1,22 @@
+---
+# Vault-Datei: vault_wifi_password: "dein_wlan_passwort"
+# Ausführen:   ansible-playbook arch_networkmanager_wifi_config.yaml --ask-vault-pass
+
+- name: WLAN-Netzwerke vordefinieren (Arch / CachyOS)
+  hosts: arch_nodes
+  become: true
+  vars:
+    wifi_password: "{{ vault_wifi_password }}"
+
+  tasks:
+    - name: WLAN-Verbindung hinzufügen
+      community.general.nmcli:
+        conn_name: "MeinHeimnetzwerk"
+        ifname: "wlan0"         # Schnittstelle ggf. anpassen (ip link zeigt den Namen)
+        type: wifi
+        ssid: "SSID_NAME"       # Deine SSID eintragen
+        wifi_sec:
+          key-mgmt: wpa-psk
+          psk: "{{ wifi_password }}"
+        state: present
+        autoconnect: true

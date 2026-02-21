@@ -1,0 +1,31 @@
+---
+# Syncthing kann auf Arch alternativ auch als systemd User-Service laufen:
+#   systemctl --user enable --now syncthing
+# Dieses Playbook nutzt XDG-Autostart für Kompatibilität mit COSMIC.
+
+- name: Syncthing Autostart für COSMIC Desktop einrichten (Arch / CachyOS)
+  hosts: arch_nodes
+  become: false  # User-Kontext
+
+  tasks:
+
+    - name: Autostart-Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "~/.config/autostart"
+        state: directory
+        mode: '0755'
+
+    - name: Syncthing Autostart-Datei erstellen
+      ansible.builtin.copy:
+        dest: "~/.config/autostart/syncthing.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=Syncthing
+          Comment=Dateisynchronisation im Hintergrund
+          Exec=/usr/bin/syncthing serve --no-browser
+          Icon=syncthing
+          Terminal=false
+          Categories=Network;FileTransfer;
+          X-GNOME-Autostart-enabled=true
+        mode: '0644'

@@ -1,0 +1,171 @@
+---
+# Hinweis CachyOS vs. plain Arch:
+#  - CachyOS liefert COSMIC (cosmic-session, cosmic-greeter) direkt aus den
+#    eigenen Repos. Auf plain Arch Linux sind diese Pakete im AUR – dort
+#    wird ein AUR-Helper (paru) benötigt. Der paru-Task ist standardmäßig
+#    auskommentiert und kann bei Bedarf aktiviert werden.
+#  - Das Playbook setzt systemd als Init-System voraus (Standard auf Arch/CachyOS).
+
+- name: Arch / CachyOS COSMIC Desktop Setup
+  hosts: arch_nodes
+  become: yes
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # System aktualisieren
+    # -------------------------------------------------------------------------
+
+    - name: System vollständig aktualisieren
+      community.general.pacman:
+        update_cache: yes
+        upgrade: yes
+
+    # -------------------------------------------------------------------------
+    # CachyOS: COSMIC und Basis-Pakete aus den Repos installieren
+    # -------------------------------------------------------------------------
+
+    - name: Basis-Pakete installieren
+      community.general.pacman:
+        name:
+          - cosmic-session
+          - cosmic-greeter
+          - flatpak
+          - dropbear
+          - mesa                  # GPU-Treiber (ersetzt mesa-dri-gallium aus Alpine)
+          - xorg-xwayland         # Für X11-Kompatibilität unter Wayland
+          - greetd                # Display-Manager für COSMIC
+        state: present
+
+    - name: Syncthing installieren
+      community.general.pacman:
+        name: syncthing
+        state: present
+
+    # -------------------------------------------------------------------------
+    # (Optional) Plain Arch: paru als AUR-Helper installieren und COSMIC aus AUR
+    # -------------------------------------------------------------------------
+    # Auskommentieren falls kein CachyOS verwendet wird:
+    #
+    # - name: Basis-Pakete für paru-Build installieren
+    #   community.general.pacman:
+    #     name: [base-devel, git]
+    #     state: present
+    #
+    # - name: paru AUR-Helper bauen und installieren
+    #   ansible.builtin.shell: |
+    #     git clone https://aur.archlinux.org/paru.git /tmp/paru
+    #     cd /tmp/paru && makepkg -si --noconfirm
+    #   args:
+    #     creates: /usr/bin/paru
+    #   become: no
+    #
+    # - name: COSMIC aus AUR installieren (via paru)
+    #   ansible.builtin.shell: paru -S --noconfirm cosmic-session cosmic-greeter
+    #   become: no
+
+    # -------------------------------------------------------------------------
+    # Dienste aktivieren
+    # -------------------------------------------------------------------------
+
+    - name: Dropbear aktivieren und starten
+      ansible.builtin.systemd:
+        name: dropbear
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Greetd (grafischer Login) aktivieren und starten
+      ansible.builtin.systemd:
+        name: greetd
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------------
+    # Flatpak
+    # -------------------------------------------------------------------------
+
+    - name: Flatpak Flathub-Remote hinzufügen (systemweit)
+      ansible.builtin.command:
+        cmd: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+      changed_when: false
+
+    # -------------------------------------------------------------------------
+    # NetworkManager
+    # -------------------------------------------------------------------------
+
+    - name: NetworkManager und Abhängigkeiten installieren
+      community.general.pacman:
+        name:
+          - networkmanager
+          - python-gobject         # Erforderlich für das nmcli-Ansible-Modul
+          - dbus
+        state: present
+
+    - name: D-Bus aktivieren und starten
+      ansible.builtin.systemd:
+        name: dbus
+        enabled: yes
+        state: started
+
+    - name: NetworkManager aktivieren und starten
+      ansible.builtin.systemd:
+        name: NetworkManager
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------------
+    # Audio: PipeWire
+    # -------------------------------------------------------------------------
+
+    - name: PipeWire und zugehörige Pakete installieren
+      community.general.pacman:
+        name:
+          - pipewire
+          - wireplumber
+          - pipewire-pulse
+          - pipewire-alsa
+          - pipewire-jack          # Optionaler JACK-Ersatz
+          - alsa-utils
+        state: present
+
+    - name: Benutzer zur Gruppe audio und video hinzufügen
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: audio,video
+        append: yes
+
+    # PipeWire läuft auf Arch als systemd User-Service – wird beim Login
+    # automatisch durch die Session gestartet, wenn socket-Activation aktiv ist.
+    - name: PipeWire User-Services per systemd socket aktivieren
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: yes
+        scope: user            # Läuft im User-Kontext, kein sudo nötig
+      loop:
+        - pipewire.socket
+        - pipewire-pulse.socket
+      become: no               # User-Scope erfordert keinen Root
+
+    - name: WirePlumber User-Service aktivieren
+      ansible.builtin.systemd:
+        name: wireplumber
+        enabled: yes
+        scope: user
+      become: no
+
+    # -------------------------------------------------------------------------
+    # Shell & Terminal
+    # -------------------------------------------------------------------------
+
+    - name: Fish und Alacritty installieren
+      community.general.pacman:
+        name:
+          - fish
+          - alacritty
+        state: present
+
+    - name: Fish als Standard-Shell für den Benutzer setzen
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        shell: /usr/bin/fish

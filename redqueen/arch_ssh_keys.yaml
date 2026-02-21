@@ -1,0 +1,188 @@
+---
+# Vault-Datei benötigt:
+#   vault_ssh_key_passphrase:   "passphrase_oder_leer"
+#   vault_additional_pubkeys:   ["ssh-ed25519 AAAA... user@host", ...]
+# Ausführen: ansible-playbook arch_ssh_keys.yaml --ask-vault-pass
+
+- name: SSH Key Management (Arch / CachyOS)
+  hosts: arch_nodes
+  become: yes
+  vars:
+    username: "meinuser"
+    ssh_key_type: "ed25519"
+    ssh_key_bits: 4096
+    ssh_key_comment: "{{ username }}@{{ inventory_hostname }}"
+    ssh_key_passphrase: "{{ vault_ssh_key_passphrase | default('') }}"
+    control_node_pubkey_path: "~/.ssh/id_ed25519.pub"
+    additional_pubkeys: "{{ vault_additional_pubkeys | default([]) }}"
+    sshd_config_path: "/etc/ssh/sshd_config"
+    ssh_port: 22
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Voraussetzungen
+    # -------------------------------------------------------------------------
+
+    - name: OpenSSH installieren
+      community.general.pacman:
+        name: openssh
+        state: present
+
+    - name: .ssh Verzeichnis anlegen
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.ssh"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0700'
+
+    # -------------------------------------------------------------------------
+    # 2. Schlüsselpaar generieren
+    # -------------------------------------------------------------------------
+
+    - name: SSH-Schlüsselpaar generieren (falls noch nicht vorhanden)
+      ansible.builtin.openssh_keypair:
+        path: "/home/{{ username }}/.ssh/id_{{ ssh_key_type }}"
+        type: "{{ ssh_key_type }}"
+        size: "{{ ssh_key_bits }}"
+        comment: "{{ ssh_key_comment }}"
+        passphrase: "{{ ssh_key_passphrase }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+        state: present
+      register: generated_keypair
+
+    - name: Generierten Public Key anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Public Key für {{ username }}@{{ inventory_hostname }}:
+          {{ generated_keypair.public_key }}
+
+    # -------------------------------------------------------------------------
+    # 3. Autorisierte Schlüssel hinterlegen
+    # -------------------------------------------------------------------------
+
+    - name: Public Key vom Control-Node in authorized_keys eintragen
+      ansible.posix.authorized_key:
+        user: "{{ username }}"
+        state: present
+        key: "{{ lookup('file', control_node_pubkey_path) }}"
+        comment: "control-node"
+
+    - name: Weitere Public Keys aus Vault hinterlegen
+      ansible.posix.authorized_key:
+        user: "{{ username }}"
+        state: present
+        key: "{{ item }}"
+      loop: "{{ additional_pubkeys }}"
+      when: additional_pubkeys | length > 0
+
+    # -------------------------------------------------------------------------
+    # 4. SSH Host Keys und Fingerprint
+    # -------------------------------------------------------------------------
+
+    - name: SSH Host Keys generieren (falls fehlend)
+      ansible.builtin.command: ssh-keygen -A
+      args:
+        creates: /etc/ssh/ssh_host_ed25519_key
+
+    - name: Host-Key-Fingerprint ausgeben
+      ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: host_key_fingerprint
+      changed_when: false
+
+    - name: Fingerprint anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Host Key Fingerprint für {{ inventory_hostname }}:
+          {{ host_key_fingerprint.stdout }}
+          → Diesen Wert in arch_cosmic_automount.yaml als remote_host_key eintragen.
+
+    # -------------------------------------------------------------------------
+    # 5. sshd absichern
+    # -------------------------------------------------------------------------
+
+    - name: Root-Login deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: sshd neu starten
+
+    - name: Passwort-Authentifizierung deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: sshd neu starten
+
+    - name: ChallengeResponse-Auth deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+      notify: sshd neu starten
+
+    - name: X11-Forwarding deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?X11Forwarding'
+        line: 'X11Forwarding no'
+      notify: sshd neu starten
+
+    - name: SSH-Port konfigurieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?Port '
+        line: "Port {{ ssh_port }}"
+      notify: sshd neu starten
+
+    - name: MaxAuthTries auf 3 begrenzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 3'
+      notify: sshd neu starten
+
+    - name: Idle-Timeout setzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 600'
+      notify: sshd neu starten
+
+    - name: ClientAliveCountMax setzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 2'
+      notify: sshd neu starten
+
+    # -------------------------------------------------------------------------
+    # 6. SSH-Dienst aktivieren (systemd statt OpenRC)
+    # -------------------------------------------------------------------------
+
+    - name: sshd aktivieren und starten
+      ansible.builtin.systemd:
+        name: sshd
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    # -------------------------------------------------------------------------
+    # 7. Public Key lokal sichern
+    # -------------------------------------------------------------------------
+
+    - name: Generierten Public Key lokal sichern
+      ansible.builtin.fetch:
+        src: "/home/{{ username }}/.ssh/id_{{ ssh_key_type }}.pub"
+        dest: "fetched_keys/{{ inventory_hostname }}_{{ username }}.pub"
+        flat: yes
+
+  handlers:
+    - name: sshd neu starten
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
