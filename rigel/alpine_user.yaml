@@ -1,15 +1,28 @@
 ---
+# FIX: Passwörter nie im Klartext. Dieses Playbook erwartet eine Vault-Datei.
+# Vault-Datei anlegen mit: ansible-vault create group_vars/all/vault.yaml
+# Inhalt der Vault-Datei:
+#   vault_user_password: "dein_sicheres_passwort"
+#
+# Ausführen mit: ansible-playbook alpine_user.yaml --ask-vault-pass
+
 - name: Setup User with Auto-Mount Encrypted Home
   hosts: alpine_nodes
   become: yes
   vars:
     username: "meinuser"
-    user_password: "geheimespasswort" # In Produktion: ansible-vault nutzen!
+    # FIX: Passwort kommt aus Ansible Vault, nicht mehr im Klartext
+    user_password: "{{ vault_user_password }}"
 
   tasks:
     - name: Benötigte Pakete installieren
       community.general.apk:
-        name: [ecryptfs-utils, pam-ecryptfs, rsync]
+        name:
+          - ecryptfs-utils
+          - pam-ecryptfs
+          - rsync
+          # FIX: fish installieren, da es als Shell gesetzt wird
+          - fish
         state: present
 
     - name: Kernel-Modul laden
@@ -17,11 +30,13 @@
         name: ecryptfs
         state: present
 
+    # FIX: Shell auf /usr/bin/fish geändert (konsistent mit alpine_pkg_install.yaml;
+    #      /bin/zsh wird nirgends installiert)
     - name: Nutzer erstellen
       ansible.builtin.user:
         name: "{{ username }}"
         password: "{{ user_password | password_hash('sha512') }}"
-        shell: /bin/zsh
+        shell: /usr/bin/fish
         create_home: yes
 
     - name: eCryptfs Verzeichnisstruktur initialisieren
@@ -29,6 +44,7 @@
         echo "{{ user_password }}" | ecryptfs-setup-private -u {{ username }} --nopwcheck --login
       args:
         creates: "/home/{{ username }}/.ecryptfs"
+      # Passwort kommt zur Laufzeit aus Vault – kein Klartext im Playbook
 
     - name: PAM Konfiguration - Auth (Passwort-Übergabe)
       ansible.builtin.lineinfile:

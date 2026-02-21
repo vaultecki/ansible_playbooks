@@ -1,0 +1,234 @@
+---
+# SSH Key Management für Alpine Linux
+# =====================================
+# Dieses Playbook übernimmt:
+#  1. SSH-Schlüsselpaar auf dem Zielhost generieren (falls noch nicht vorhanden)
+#  2. Öffentliche Schlüssel vom Control-Node auf den Zielhost deployen
+#  3. Zusätzliche autorisierte Schlüssel (z.B. Team-Mitglieder) hinterlegen
+#  4. SSH-Daemon absichern (Root-Login & Passwort-Auth deaktivieren)
+#  5. Privaten Schlüssel vom Zielhost sichern (optional, z.B. für Backups)
+#
+# Vault-Variablen (in group_vars/all/vault.yaml):
+#   vault_ssh_key_passphrase    – Passphrase für den generierten Key (leer = kein Schutz)
+#   vault_additional_pubkeys    – Liste weiterer autorisierter Public Keys (optional)
+#
+# Ausführen mit:
+#   ansible-playbook alpine_ssh_keys.yaml --ask-vault-pass
+
+- name: SSH Key Management
+  hosts: alpine_nodes
+  become: yes
+  vars:
+    # Zu verwaltender Benutzer
+    username: "meinuser"
+
+    # Typ und Stärke des zu generierenden Schlüssels
+    # Empfehlung: ed25519 (modern, klein, sicher) oder rsa mit 4096 Bit
+    ssh_key_type: "ed25519"
+    ssh_key_bits: 4096            # Nur relevant bei type: rsa
+    ssh_key_comment: "{{ username }}@{{ inventory_hostname }}"
+
+    # Passphrase aus Vault – leer lassen für passwortlosen Key (z.B. für Autostart-Skripte)
+    ssh_key_passphrase: "{{ vault_ssh_key_passphrase | default('') }}"
+
+    # Pfad zum Public Key auf dem Ansible Control-Node, der auf den Zielhost deployt wird
+    # Typischerweise ~/.ssh/id_ed25519.pub oder ~/.ssh/id_rsa.pub
+    control_node_pubkey_path: "~/.ssh/id_ed25519.pub"
+
+    # Optionale Liste weiterer Public Keys (z.B. Team-Mitglieder), die Zugriff erhalten
+    # Wird aus der Vault geladen – dort als YAML-Liste definieren:
+    #   vault_additional_pubkeys:
+    #     - "ssh-ed25519 AAAA... kollege1@rechner"
+    #     - "ssh-ed25519 AAAA... kollege2@rechner"
+    additional_pubkeys: "{{ vault_additional_pubkeys | default([]) }}"
+
+    # SSH-Daemon-Konfiguration
+    sshd_config_path: "/etc/ssh/sshd_config"
+    ssh_port: 22  # Auf einem nicht-standard Port ändern erhöht die Sicherheit
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Voraussetzungen
+    # -------------------------------------------------------------------------
+
+    - name: OpenSSH installieren
+      community.general.apk:
+        name:
+          - openssh
+          - openssh-keygen
+        state: present
+        update_cache: yes
+
+    - name: .ssh Verzeichnis für Benutzer anlegen
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.ssh"
+        state: directory
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0700'
+
+    # -------------------------------------------------------------------------
+    # 2. SSH-Schlüsselpaar auf dem Zielhost generieren
+    # -------------------------------------------------------------------------
+
+    - name: SSH-Schlüsselpaar für Benutzer generieren (falls noch nicht vorhanden)
+      ansible.builtin.openssh_keypair:
+        path: "/home/{{ username }}/.ssh/id_{{ ssh_key_type }}"
+        type: "{{ ssh_key_type }}"
+        size: "{{ ssh_key_bits }}"
+        comment: "{{ ssh_key_comment }}"
+        passphrase: "{{ ssh_key_passphrase }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+        state: present
+      register: generated_keypair
+
+    - name: Generierten Public Key anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Public Key für {{ username }}@{{ inventory_hostname }}:
+          {{ generated_keypair.public_key }}
+          
+          Diesen Key ggf. auf anderen Servern in ~/.ssh/authorized_keys eintragen.
+
+    # -------------------------------------------------------------------------
+    # 3. Public Key vom Control-Node auf den Zielhost deployen
+    # -------------------------------------------------------------------------
+
+    - name: Public Key vom Control-Node in authorized_keys eintragen
+      ansible.posix.authorized_key:
+        user: "{{ username }}"
+        state: present
+        key: "{{ lookup('file', control_node_pubkey_path) }}"
+        comment: "control-node"
+
+    # -------------------------------------------------------------------------
+    # 4. Weitere autorisierte Public Keys hinterlegen (z.B. Team / Backup-Zugang)
+    # -------------------------------------------------------------------------
+
+    - name: Weitere autorisierte Public Keys aus Vault hinterlegen
+      ansible.posix.authorized_key:
+        user: "{{ username }}"
+        state: present
+        key: "{{ item }}"
+      loop: "{{ additional_pubkeys }}"
+      when: additional_pubkeys | length > 0
+
+    # -------------------------------------------------------------------------
+    # 5. SSH Host Keys generieren (falls frische Installation ohne sshd-Init)
+    # -------------------------------------------------------------------------
+
+    - name: SSH Host Keys generieren (falls fehlend)
+      ansible.builtin.command: ssh-keygen -A
+      args:
+        creates: /etc/ssh/ssh_host_ed25519_key
+
+    - name: Fingerprints der Host Keys ausgeben (für known_hosts-Einträge)
+      ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: host_key_fingerprint
+      changed_when: false
+
+    - name: Host-Key-Fingerprint anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Host Key Fingerprint für {{ inventory_hostname }}:
+          {{ host_key_fingerprint.stdout }}
+          
+          Dieser Fingerprint gehört in alpine_cosmic_automount.yaml → remote_host_key.
+
+    # -------------------------------------------------------------------------
+    # 6. SSH-Daemon absichern
+    # -------------------------------------------------------------------------
+
+    - name: Root-Login per SSH deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+      notify: sshd neu starten
+
+    - name: Passwort-Authentifizierung deaktivieren (nur Key-Auth erlaubt)
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+      notify: sshd neu starten
+
+    - name: ChallengeResponse-Auth deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+        state: present
+      notify: sshd neu starten
+
+    - name: X11-Forwarding deaktivieren (nicht benötigt)
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?X11Forwarding'
+        line: 'X11Forwarding no'
+        state: present
+      notify: sshd neu starten
+
+    - name: SSH-Port konfigurieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?Port '
+        line: "Port {{ ssh_port }}"
+        state: present
+      notify: sshd neu starten
+
+    - name: MaxAuthTries auf 3 begrenzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 3'
+        state: present
+      notify: sshd neu starten
+
+    - name: Idle-Timeout auf 10 Minuten setzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 600'
+        state: present
+      notify: sshd neu starten
+
+    - name: ClientAliveCountMax auf 2 setzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 2'
+        state: present
+      notify: sshd neu starten
+
+    # -------------------------------------------------------------------------
+    # 7. SSH-Dienst aktivieren
+    # -------------------------------------------------------------------------
+
+    - name: SSH-Dienst aktivieren und starten
+      ansible.builtin.service:
+        name: sshd
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------------
+    # 8. Öffentlichen Schlüssel des Zielhosts zur Sicherung abrufen (optional)
+    # -------------------------------------------------------------------------
+
+    - name: Generierten Public Key lokal sichern
+      ansible.builtin.fetch:
+        src: "/home/{{ username }}/.ssh/id_{{ ssh_key_type }}.pub"
+        dest: "fetched_keys/{{ inventory_hostname }}_{{ username }}.pub"
+        flat: yes
+      # Erzeugt lokal auf dem Control-Node: fetched_keys/<hostname>_<user>.pub
+
+  handlers:
+    - name: sshd neu starten
+      ansible.builtin.service:
+        name: sshd
+        state: restarted

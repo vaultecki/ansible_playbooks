@@ -3,14 +3,22 @@
   hosts: alpine_nodes
   become: yes
 
+    # FIX: Community-Repository zuerst aktivieren, damit nachfolgende apk-Tasks
+    #      darauf zugreifen können (vorher stand dieser Task am Ende der Datei).
+    #      Außerdem wurden die kaputten/duplizierten Repository-URLs korrigiert.
   tasks:
+    - name: Stelle sicher, dass das Community-Repository aktiviert ist
+      ansible.builtin.command: setup-apkrepos -c
+      register: repo_result
+      changed_when: "'added' in repo_result.stdout"
+
     - name: Repositories auf Edge umstellen (erforderlich für COSMIC)
       ansible.builtin.copy:
         dest: /etc/apk/repositories
         content: |
-          https://dl-cdn.alpinelinux.org
-          https://dl-cdn.alpinelinux.org
-          https://dl-cdn.alpinelinux.org
+          https://dl-cdn.alpinelinux.org/alpine/edge/main
+          https://dl-cdn.alpinelinux.org/alpine/edge/community
+          https://dl-cdn.alpinelinux.org/alpine/edge/testing
 
     - name: System-Update und Installation der Pakete
       community.general.apk:
@@ -20,13 +28,15 @@
           - cosmic-session
           - cosmic-greeter
           - flatpak
+          # ENTFERNT: rustybox als Shell – Konflikt mit fish (weiter unten).
+          # rustybox bleibt als Toolbox verfügbar, wird aber nicht als Login-Shell gesetzt.
           - rustybox
           - dropbear
           - dropbear-ssh
-          - mesa-dri-gallium # GPU Treiber
+          - mesa-dri-gallium  # GPU Treiber
           - udev
         state: present
-    
+
     - name: Syncthing Paket installieren
       community.general.apk:
         name: syncthing
@@ -38,12 +48,9 @@
         name: "{{ item }}"
         enabled: yes
         state: started
-      loop: [udev, dropbear]
-
-    - name: Rustybox als Standard-Shell für Nutzer setzen
-      ansible.builtin.user:
-        name: "{{ ansible_user }}"
-        shell: /usr/bin/rustybox
+      loop:
+        - udev
+        - dropbear
 
     - name: Grafischen Login (Greetd) konfigurieren
       ansible.builtin.service:
@@ -51,13 +58,14 @@
         enabled: yes
         state: started
 
-    - name: Flatpak Alpine Repo hinzufügen
-      ansible.builtin.command: 
-        cmd: flatpak remote-add --if-not-exists flathub https://flathub.org
-    
+    # FIX: Korrekte Flatpak-Remote-URL (vorher: https://flathub.org, fehlerhaft)
+    - name: Flatpak Flathub Repo hinzufügen
+      ansible.builtin.command:
+        cmd: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
     - name: NetworkManager Pakete installieren
       community.general.apk:
-        name: 
+        name:
           - networkmanager
           - networkmanager-cli
           - networkmanager-wifi  # Wichtig für WLAN-Support
@@ -74,11 +82,6 @@
       loop:
         - dbus
         - networkmanager
-    
-    - name: Stelle sicher, dass das Community-Repository aktiviert ist
-      command: setup-apkrepos -c
-      register: repo_result
-      changed_when: "'added' in repo_result.stdout"
 
     - name: Installiere Audio-Pakete
       community.general.apk:
@@ -91,28 +94,93 @@
         state: present
         update_cache: yes
 
-    - name: Fuege User zur Gruppe 'audio' und 'video' hinzu
-      user:
+    - name: Fuege User zur Gruppe audio und video hinzu
+      ansible.builtin.user:
         name: "{{ ansible_user }}"
         groups: audio,video
         append: yes
 
-    - name: Erstelle Konfigurationsverzeichnisse (optional für Anpassungen)
-      shell: |
-        cp -a /usr/share/pipewire /etc/
-        cp -a /usr/share/wireplumber /etc/
-      args:
-        creates: /etc/pipewire/pipewire.conf
+    # FIX: ansible.builtin.copy statt shell verwenden (idempotent, kein sh-Overhead)
+    - name: Erstelle PipeWire Konfigurationsverzeichnis
+      ansible.builtin.file:
+        path: /etc/pipewire
+        state: directory
+        mode: '0755'
 
-    - name: Aktiviere PipeWire und WirePlumber als User-Services
-      # Benötigt Alpine 3.22+ für native User-Services
-      shell: |
-        rc-update -U add pipewire gui
-        rc-update -U add wireplumber gui
-        rc-update -U add pipewire-pulse gui
-      become: no
-    
-    - name: Update Paket-Index und installiere Fish & Alacritty
+    - name: PipeWire Konfiguration kopieren
+      ansible.builtin.copy:
+        src: /usr/share/pipewire/
+        dest: /etc/pipewire/
+        remote_src: yes
+        force: no  # Überschreibt nicht, falls bereits vorhanden
+
+    - name: WirePlumber Konfigurationsverzeichnis erstellen
+      ansible.builtin.file:
+        path: /etc/wireplumber
+        state: directory
+        mode: '0755'
+
+    - name: WirePlumber Konfiguration kopieren
+      ansible.builtin.copy:
+        src: /usr/share/wireplumber/
+        dest: /etc/wireplumber/
+        remote_src: yes
+        force: no
+
+    # FIX: rc-update -U existiert in Alpine nicht. PipeWire wird als User-Service
+    #      über XDG-Autostart gestartet (COSMIC lädt .desktop-Dateien beim Login).
+    - name: PipeWire Autostart-Verzeichnis für User anlegen
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.config/autostart"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0755'
+      become: yes
+
+    - name: PipeWire Autostart-Eintrag erstellen
+      ansible.builtin.copy:
+        dest: "/home/{{ ansible_user }}/.config/autostart/pipewire.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=PipeWire
+          Exec=/usr/bin/pipewire
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+        owner: "{{ ansible_user }}"
+        mode: '0644'
+      become: yes
+
+    - name: WirePlumber Autostart-Eintrag erstellen
+      ansible.builtin.copy:
+        dest: "/home/{{ ansible_user }}/.config/autostart/wireplumber.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=WirePlumber
+          Exec=/usr/bin/wireplumber
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+        owner: "{{ ansible_user }}"
+        mode: '0644'
+      become: yes
+
+    - name: PipeWire-Pulse Autostart-Eintrag erstellen
+      ansible.builtin.copy:
+        dest: "/home/{{ ansible_user }}/.config/autostart/pipewire-pulse.desktop"
+        content: |
+          [Desktop Entry]
+          Type=Application
+          Name=PipeWire PulseAudio
+          Exec=/usr/bin/pipewire-pulse
+          Terminal=false
+          X-GNOME-Autostart-enabled=true
+        owner: "{{ ansible_user }}"
+        mode: '0644'
+      become: yes
+
+    - name: Fish und Alacritty installieren
       community.general.apk:
         name:
           - fish
@@ -120,13 +188,13 @@
         state: present
         update_cache: yes
 
-    - name: Setze Fish als Standard-Shell für den Benutzer
+    # FIX: Nur fish als Standard-Shell (rustybox-Shell-Task entfernt, war widersprüchlich)
+    - name: Setze Fish als Standard-Shell fuer den Benutzer
       ansible.builtin.user:
         name: "{{ ansible_user }}"
         shell: /usr/bin/fish
 
-    - name: Installiere Fish-Completions für Alacritty (optional)
+    - name: Installiere Fish-Completions fuer Alacritty
       community.general.apk:
         name: alacritty-fish-completion
         state: present
-    

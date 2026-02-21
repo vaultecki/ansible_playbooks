@@ -1,3 +1,6 @@
+---
+# FIX: Fehlender YAML-Dokument-Header (---) ergänzt
+
 - name: Syncthing Autostart für COSMIC Desktop einrichten
   hosts: all
   become: false  # Muss im User-Kontext ausgeführt werden

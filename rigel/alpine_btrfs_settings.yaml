@@ -1,15 +1,21 @@
 ---
+# FIX: duperemove mit Größen- und Tiefenlimit versehen, um unkontrollierte
+#      Systembelastung bei einem Lauf auf dem Root-Filesystem zu verhindern.
+
 - name: Btrfs Optimierung und Systemkonfiguration für Alpine
   hosts: all
   become: true
   vars:
     btrfs_mountpoint: "/"
     compression_opt: "compress=zstd:3"
+    # FIX: Limits für duperemove definierbar machen
+    duperemove_min_size: "1M"    # Dateien kleiner als 1 MB überspringen
+    duperemove_io_threads: "2"   # Anzahl paralleler I/O-Threads begrenzen
 
   tasks:
     - name: Btrfs-Progs und Deduplizierungstools installieren
       community.general.apk:
-        name: 
+        name:
           - btrfs-progs
           - duperemove
         state: present
@@ -40,11 +46,20 @@
         fstype: btrfs
         opts: "defaults,{{ compression_opt }}"
 
+    # FIX: duperemove mit --min-size und --io-threads, um Systemlast zu begrenzen.
+    #      --hashfile speichert Hashes zwischen den Läufen, damit nicht jedes Mal
+    #      alles neu gehasht werden muss (deutlich schnellere Folgeläufe).
     - name: Wöchentlichen Cron-Job für Deduplizierung einrichten
       ansible.builtin.cron:
         name: "Btrfs Deduplizierung"
         user: "root"
-        job: "/usr/bin/duperemove -dr {{ btrfs_mountpoint }}"
+        job: >-
+          /usr/bin/duperemove
+          -dr
+          --min-size={{ duperemove_min_size }}
+          --io-threads={{ duperemove_io_threads }}
+          --hashfile=/var/cache/duperemove.hash
+          {{ btrfs_mountpoint }}
         special_time: "weekly"
 
   handlers:

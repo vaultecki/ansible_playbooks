@@ -1,25 +1,29 @@
 ---
+# FIX: Zwei fehlerhafte Flatpak-App-IDs korrigiert:
+#  - org.freecadweb.FreeCAD  → org.freecad.FreeCAD   (alte ID funktioniert nicht mehr)
+#  - dev.shadow_53.spotube   → dev.shadow_53.Spotube  (Großschreibung beachten)
+
 - name: Flatpaks nur für den aktuellen User installieren
   hosts: all
   become: false  # Installation erfolgt im User-Kontext, kein Root nötig
-  
+
   tasks:
     - name: Flatpak Pakete installieren
       community.general.flatpak:
         name: "{{ item }}"
         state: present
         remote: flathub
-        method: user  # Wichtig: Installiert in ~/.local/share/flatpak
+        method: user  # Installiert in ~/.local/share/flatpak
       loop:
         - org.mozilla.firefox
         - org.chromium.Chromium
-        - org.freecadweb.FreeCAD
+        - org.freecad.FreeCAD           # FIX: war org.freecadweb.FreeCAD
         - org.kicad.KiCad
         - org.signal.Signal
         - org.gajim.Gajim
         - org.gimp.GIMP
         - org.darktable.Darktable
-        - dev.shadow_53.spotube
+        - dev.shadow_53.Spotube         # FIX: war dev.shadow_53.spotube
         - org.libreoffice.LibreOffice
         - com.vscodium.codium
         - org.keepassxc.KeePassXC
@@ -38,4 +42,3 @@
         - com.github.xournalpp.xournalpp
         - com.cassidyjames.butler
         - io.github.flattool.Warehouse
-        

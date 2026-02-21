@@ -1,15 +1,27 @@
+---
+# FIX: WLAN-Passwort nie im Klartext. Dieses Playbook erwartet eine Vault-Datei.
+# Vault-Datei anlegen mit: ansible-vault create group_vars/all/vault.yaml
+# Inhalt der Vault-Datei:
+#   vault_wifi_password: "dein_wlan_passwort"
+#
+# Ausführen mit: ansible-playbook alpine_networkmanager_wifi_config.yaml --ask-vault-pass
+
 - name: WLAN-Netzwerke vordefinieren
   hosts: all
   become: true
+  vars:
+    # FIX: Passwort kommt aus Ansible Vault, nicht mehr im Klartext
+    wifi_password: "{{ vault_wifi_password }}"
+
   tasks:
     - name: WLAN-Verbindung hinzufügen
       community.general.nmcli:
         conn_name: "MeinHeimnetzwerk"
-        ifname: "wlan0"  # Deine WLAN-Schnittstelle
+        ifname: "wlan0"  # Deine WLAN-Schnittstelle anpassen
         type: wifi
-        ssid: "SSID_NAME"
+        ssid: "SSID_NAME"  # Deine SSID eintragen
         wifi_sec:
           key-mgmt: wpa-psk
-          psk: "DEIN_PASSWORT"
+          psk: "{{ wifi_password }}"
         state: present
         autoconnect: true

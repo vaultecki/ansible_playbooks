@@ -1,4 +1,9 @@
 ---
+# FIX: Mehrere Sicherheits- und Funktionskorrekturen:
+#  1. StrictHostKeyChecking deaktiviert → durch known_hosts-Task ersetzt
+#  2. allow_other in SSHFS-Optionen → /etc/fuse.conf wird korrekt gesetzt
+#  3. SSH-Key-Hinweis: In Produktion ansible-vault für den Key-Inhalt nutzen
+
 - name: Setup SSHFS Autostart for COSMIC
   hosts: alpine_nodes
   become: yes
@@ -8,6 +13,10 @@
     remote_user: "remoteuser"
     remote_path: "/pfad/am/server"
     mount_point: "/home/{{ username }}/ssh-mount"
+    # FIX: Fingerprint des Servers vorab ermitteln mit:
+    #      ssh-keyscan dein.server.de
+    #      und hier eintragen, statt StrictHostKeyChecking zu deaktivieren
+    remote_host_key: "dein.server.de ssh-ed25519 AAAA..."
 
   tasks:
     - name: Installiere SSHFS
@@ -29,8 +38,26 @@
 
     - name: Kopiere SSH Private Key
       ansible.builtin.copy:
-        src: files/id_rsa  # Pfad zu deinem lokalen Key auf dem Ansible-Control-Node
+        # FIX: In Produktion den Key-Inhalt per ansible-vault verschlüsseln:
+        #      ansible-vault encrypt files/id_rsa
+        src: files/id_rsa
         dest: "/home/{{ username }}/.ssh/id_rsa"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: '0600'
+
+    # FIX: Bekannten Host-Fingerprint in known_hosts eintragen statt
+    #      StrictHostKeyChecking zu deaktivieren (MITM-Schutz)
+    - name: Server-Fingerprint in known_hosts eintragen
+      ansible.builtin.known_hosts:
+        path: "/home/{{ username }}/.ssh/known_hosts"
+        name: "{{ remote_host }}"
+        key: "{{ remote_host_key }}"
+        state: present
+
+    - name: Setze Besitzer der known_hosts-Datei
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.ssh/known_hosts"
         owner: "{{ username }}"
         group: "{{ username }}"
         mode: '0600'
@@ -38,13 +65,21 @@
     - name: Erstelle ~/.ssh/config
       ansible.builtin.copy:
         dest: "/home/{{ username }}/.ssh/config"
+        # FIX: StrictHostKeyChecking entfernt – Fingerprint ist jetzt in known_hosts
         content: |
           Host {{ remote_host }}
             User {{ remote_user }}
             IdentityFile ~/.ssh/id_rsa
-            StrictHostKeyChecking no
         owner: "{{ username }}"
         mode: '0600'
+
+    # FIX: allow_other erfordert user_allow_other in /etc/fuse.conf
+    - name: FUSE allow_other in /etc/fuse.conf aktivieren
+      ansible.builtin.lineinfile:
+        path: /etc/fuse.conf
+        line: "user_allow_other"
+        create: yes
+        mode: '0644'
 
     - name: Erstelle COSMIC Autostart Eintrag für SSHFS
       ansible.builtin.copy:
