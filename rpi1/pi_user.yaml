@@ -1,0 +1,106 @@
+---
+# Vault-Datei benötigt:
+#   vault_pi_user_password: "dein_passwort"
+# Ausführen: ansible-playbook pi_user.yaml --ask-vault-pass
+#
+# Hinweis: Der Standard-Nutzer "pi" auf Raspberry Pi OS ist vorinstalliert
+# und sollte aus Sicherheitsgründen umbenannt oder deaktiviert werden.
+# Dieses Playbook legt einen eigenen Admin-Account an und sperrt "pi".
+#
+# Zusätzlich wird ein unprivilegierter Kodi-Account angelegt, unter dem
+# Kodi als Dienst läuft (kein X11-Login nötig, läuft direkt via KMS/DRM).
+
+- name: Raspberry Pi Benutzer einrichten (Debian)
+  hosts: pi_nodes
+  become: yes
+  vars:
+    admin_user: "piadmin"
+    admin_password: "{{ vault_pi_user_password }}"
+    kodi_user: "kodi"
+    kodi_uid: 1001
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Basis-Pakete
+    # -------------------------------------------------------------------------
+
+    - name: System aktualisieren
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Basis-Pakete installieren
+      ansible.builtin.apt:
+        name:
+          - sudo
+          - curl
+          - vim
+          - htop
+          - lsof
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 2. Admin-Account anlegen
+    # -------------------------------------------------------------------------
+
+    - name: Admin-Benutzer anlegen
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        password: "{{ admin_password | password_hash('sha512') }}"
+        shell: /bin/bash
+        create_home: yes
+        groups:
+          - sudo      # Sudo-Zugang
+          - adm       # Log-Zugang
+          - dialout   # Serielle Schnittstellen (GPIO)
+          - plugdev   # USB-Geräte
+        append: yes
+        state: present
+
+    - name: .ssh Verzeichnis für Admin anlegen
+      ansible.builtin.file:
+        path: "/home/{{ admin_user }}/.ssh"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0700'
+
+    # -------------------------------------------------------------------------
+    # 3. Standard-User "pi" deaktivieren
+    # -------------------------------------------------------------------------
+
+    - name: Standard-Nutzer pi deaktivieren (kein Login mehr möglich)
+      ansible.builtin.user:
+        name: pi
+        shell: /usr/sbin/nologin
+        password: "!"           # Account sperren
+      ignore_errors: yes        # Überspringen falls pi nicht existiert
+
+    # -------------------------------------------------------------------------
+    # 4. Kodi-Account anlegen
+    # -------------------------------------------------------------------------
+
+    - name: Kodi-Gruppe anlegen
+      ansible.builtin.group:
+        name: "{{ kodi_user }}"
+        state: present
+
+    - name: Kodi-Benutzer anlegen (kein Login, kein Passwort)
+      ansible.builtin.user:
+        name: "{{ kodi_user }}"
+        uid: "{{ kodi_uid }}"
+        group: "{{ kodi_user }}"
+        shell: /usr/sbin/nologin
+        create_home: yes
+        password: "!"
+        # Kodi braucht Zugriff auf Audio, Video und Input-Geräte
+        groups:
+          - audio
+          - video
+          - input      # Fernbedienung / CEC
+          - render     # GPU-Rendering (DRM/KMS)
+          - plugdev
+        append: yes
+        state: present

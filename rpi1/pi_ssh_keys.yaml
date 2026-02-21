@@ -1,0 +1,216 @@
+---
+# Vault-Datei benötigt:
+#   vault_ssh_key_passphrase:  "passphrase_oder_leer"
+#   vault_additional_pubkeys:  ["ssh-ed25519 AAAA... user@host", ...]
+# Ausführen: ansible-playbook pi_ssh_keys.yaml --ask-vault-pass
+#
+# Besonderheit Raspberry Pi:
+#   - Erster Verbindungsaufbau läuft noch über den Standard-Account oder
+#     per Passwort – danach wird Passwort-Auth deaktiviert.
+#   - SSH ist auf Raspberry Pi OS standardmäßig deaktiviert. Das Playbook
+#     aktiviert und härtet den Dienst.
+#   - Standard-Port 22 wird beibehalten (kein NAT-Konflikt im Heimnetz),
+#     kann in den vars auf einen anderen Port geändert werden.
+
+- name: SSH Key Management für Raspberry Pi (Debian)
+  hosts: pi_nodes
+  become: yes
+  vars:
+    admin_user: "piadmin"
+    ssh_key_type: "ed25519"
+    ssh_key_comment: "{{ admin_user }}@{{ inventory_hostname }}"
+    ssh_key_passphrase: "{{ vault_ssh_key_passphrase | default('') }}"
+    control_node_pubkey_path: "~/.ssh/id_ed25519.pub"
+    additional_pubkeys: "{{ vault_additional_pubkeys | default([]) }}"
+    sshd_config_path: "/etc/ssh/sshd_config"
+    ssh_port: 22
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. OpenSSH installieren und aktivieren
+    # -------------------------------------------------------------------------
+
+    - name: OpenSSH Server installieren
+      ansible.builtin.apt:
+        name: openssh-server
+        state: present
+        update_cache: yes
+
+    - name: SSH-Dienst aktivieren und starten
+      ansible.builtin.systemd:
+        name: ssh          # Debian: "ssh", nicht "sshd"
+        enabled: yes
+        state: started
+
+    # -------------------------------------------------------------------------
+    # 2. Schlüsselpaar für Admin-Account generieren
+    # -------------------------------------------------------------------------
+
+    - name: .ssh Verzeichnis sicherstellen
+      ansible.builtin.file:
+        path: "/home/{{ admin_user }}/.ssh"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0700'
+
+    - name: SSH-Schlüsselpaar generieren
+      ansible.builtin.openssh_keypair:
+        path: "/home/{{ admin_user }}/.ssh/id_{{ ssh_key_type }}"
+        type: "{{ ssh_key_type }}"
+        comment: "{{ ssh_key_comment }}"
+        passphrase: "{{ ssh_key_passphrase }}"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0600'
+        state: present
+      register: generated_keypair
+
+    - name: Generierten Public Key anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Public Key für {{ admin_user }}@{{ inventory_hostname }}:
+          {{ generated_keypair.public_key }}
+
+    # -------------------------------------------------------------------------
+    # 3. Autorisierte Schlüssel hinterlegen
+    # -------------------------------------------------------------------------
+
+    - name: Public Key vom Control-Node eintragen
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        state: present
+        key: "{{ lookup('file', control_node_pubkey_path) }}"
+        comment: "control-node"
+
+    - name: Weitere Public Keys aus Vault eintragen
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        state: present
+        key: "{{ item }}"
+      loop: "{{ additional_pubkeys }}"
+      when: additional_pubkeys | length > 0
+
+    # -------------------------------------------------------------------------
+    # 4. SSH Host Keys und Fingerprint
+    # -------------------------------------------------------------------------
+
+    - name: SSH Host Keys generieren (falls fehlend)
+      ansible.builtin.command: ssh-keygen -A
+      args:
+        creates: /etc/ssh/ssh_host_ed25519_key
+
+    - name: Host-Key-Fingerprint ausgeben
+      ansible.builtin.command: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+      register: host_key_fingerprint
+      changed_when: false
+
+    - name: Fingerprint anzeigen
+      ansible.builtin.debug:
+        msg: |
+          Host Key Fingerprint für {{ inventory_hostname }}:
+          {{ host_key_fingerprint.stdout }}
+          → In ~/.ssh/config als known_hosts-Eintrag verwenden.
+
+    # -------------------------------------------------------------------------
+    # 5. sshd absichern
+    # -------------------------------------------------------------------------
+
+    - name: SSH-Port konfigurieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?Port '
+        line: "Port {{ ssh_port }}"
+      notify: sshd neu starten
+
+    - name: Root-Login deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: sshd neu starten
+
+    - name: Passwort-Authentifizierung deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: sshd neu starten
+
+    - name: ChallengeResponse-Auth deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ChallengeResponseAuthentication'
+        line: 'ChallengeResponseAuthentication no'
+      notify: sshd neu starten
+
+    - name: Nur Admin-User darf sich einloggen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?AllowUsers'
+        line: "AllowUsers {{ admin_user }}"
+      notify: sshd neu starten
+
+    - name: X11-Forwarding deaktivieren
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?X11Forwarding'
+        line: 'X11Forwarding no'
+      notify: sshd neu starten
+
+    - name: MaxAuthTries auf 3 begrenzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?MaxAuthTries'
+        line: 'MaxAuthTries 3'
+      notify: sshd neu starten
+
+    - name: Idle-Timeout setzen (15 Minuten)
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 900'
+      notify: sshd neu starten
+
+    - name: ClientAliveCountMax setzen
+      ansible.builtin.lineinfile:
+        path: "{{ sshd_config_path }}"
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 2'
+      notify: sshd neu starten
+
+    # Debian-spezifisch: /etc/ssh/sshd_config.d/ wird per Include eingebunden.
+    # Sicherheitseinstellungen sauber in eine eigene Drop-in-Datei auslagern,
+    # damit sie beim nächsten openssh-server-Update nicht überschrieben werden.
+    - name: Sicherheits-Dropins in sshd_config.d auslagern
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/99-hardening.conf
+        content: |
+          # Ansible-verwaltete SSH-Härtung – nicht manuell bearbeiten
+          PermitRootLogin no
+          PasswordAuthentication no
+          ChallengeResponseAuthentication no
+          X11Forwarding no
+          MaxAuthTries 3
+          ClientAliveInterval 900
+          ClientAliveCountMax 2
+          AllowUsers {{ admin_user }}
+        mode: '0600'
+      notify: sshd neu starten
+
+    # -------------------------------------------------------------------------
+    # 6. Public Key lokal sichern
+    # -------------------------------------------------------------------------
+
+    - name: Generierten Public Key lokal sichern
+      ansible.builtin.fetch:
+        src: "/home/{{ admin_user }}/.ssh/id_{{ ssh_key_type }}.pub"
+        dest: "fetched_keys/{{ inventory_hostname }}_{{ admin_user }}.pub"
+        flat: yes
+
+  handlers:
+    - name: sshd neu starten
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted

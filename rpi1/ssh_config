@@ -1,0 +1,76 @@
+# ~/.ssh/config
+# =============
+# SSH-Konfiguration für den Ansible Control-Node
+# Alle Zielrechner mit Alias, Key und Optionen vordefiniert.
+#
+# Verwendung:
+#   ssh alpine-desktop
+#   ssh arch-desktop
+#   ssh alpine-nas
+#   ssh raspberry-pi
+#   ansible all -i inventory.yaml -m ping
+
+# ------------------------------------------------------------------
+# Alpine Linux Desktop
+# ------------------------------------------------------------------
+Host alpine-desktop
+    HostName 192.168.1.10               # IP-Adresse anpassen
+    User meinuser
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+
+# ------------------------------------------------------------------
+# Arch / CachyOS Desktop
+# ------------------------------------------------------------------
+Host arch-desktop
+    HostName 192.168.1.11               # IP-Adresse anpassen
+    User meinuser
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+
+# ------------------------------------------------------------------
+# Alpine NAS
+# ------------------------------------------------------------------
+Host alpine-nas
+    HostName 192.168.1.12               # IP-Adresse anpassen
+    User nasadmin
+    Port 2222                           # Nicht-Standard-Port
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    # SSH-Tunnel für Syncthing Web-UI:
+    #   ssh -L 8384:localhost:8384 alpine-nas
+    # SSH-Tunnel für Portainer Web-UI:
+    #   ssh -L 9443:localhost:9443 alpine-nas
+
+# ------------------------------------------------------------------
+# Raspberry Pi
+# ------------------------------------------------------------------
+Host raspberry-pi
+    HostName 192.168.1.13               # IP-Adresse anpassen
+    User piadmin
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    # Längerer Timeout für den langsameren ARM-Verbindungsaufbau
+    ConnectTimeout 30
+
+# ------------------------------------------------------------------
+# Gemeinsame Sicherheitseinstellungen für alle lokalen Hosts
+# ------------------------------------------------------------------
+Host 192.168.1.*
+    # Nur starke Algorithmen erlauben
+    KexAlgorithms curve25519-sha256,diffie-hellman-group16-sha512
+    HostKeyAlgorithms ssh-ed25519,rsa-sha2-512
+    Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+    MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+    # Verbindungs-Multiplexing – beschleunigt mehrere aufeinanderfolgende
+    # SSH-Verbindungen (z.B. während eines Ansible-Runs erheblich)
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m

@@ -1,0 +1,110 @@
+---
+# inventory.yaml
+# ==============
+# Ansible Inventory für:
+#   - Alpine Linux Node   (COSMIC Desktop,  alpine_*.yaml Playbooks)
+#   - Arch / CachyOS Node (COSMIC Desktop,  arch_*.yaml Playbooks)
+#   - Alpine NAS          (Podman/ZFS/NAS,  nas_*.yaml Playbooks)
+#   - Raspberry Pi        (Kodi/Debian,     pi_*.yaml Playbooks)
+#
+# Geteilte Playbooks (laufen auf allen Systemen):
+#   - tor.yaml            (Tor + Hidden Service, erkennt Init-System automatisch)
+#
+# Variablen die hier NICHT stehen (Passwörter, Keys) kommen aus:
+#   group_vars/all/vault.yaml  (ansible-vault verschlüsselt)
+
+all:
+  vars:
+    # Standard-Verbindungseinstellungen für alle Hosts
+    ansible_connection: ssh
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+
+    # Tor-Einstellungen – gelten für alle Hosts, können pro Host überschrieben werden
+    tor_socks_port: 9050
+    tor_control_port: 9051
+    hidden_service_port: 80
+    hidden_service_target: "127.0.0.1:80"
+
+  children:
+
+    # ------------------------------------------------------------------
+    # Alpine Linux Nodes
+    # ------------------------------------------------------------------
+    alpine_nodes:
+      hosts:
+        alpine-desktop:
+          ansible_host: 192.168.1.10
+          ansible_user: meinuser
+          ansible_become_method: doas
+          ansible_python_interpreter: /usr/bin/python3
+          # Tor Hidden Service auf diesem Host: SSH-Zugang über Tor
+          hidden_service_port: 22
+          hidden_service_target: "127.0.0.1:22"
+
+      vars:
+        btrfs_mountpoint: "/"
+        username: "meinuser"
+
+    # ------------------------------------------------------------------
+    # Arch / CachyOS Nodes
+    # ------------------------------------------------------------------
+    arch_nodes:
+      hosts:
+        arch-desktop:
+          ansible_host: 192.168.1.11
+          ansible_user: meinuser
+          ansible_become_method: sudo
+          ansible_python_interpreter: /usr/bin/python3
+          # Tor Hidden Service auf diesem Host: SSH-Zugang über Tor
+          hidden_service_port: 22
+          hidden_service_target: "127.0.0.1:22"
+
+      vars:
+        btrfs_mountpoint: "/"
+        username: "meinuser"
+
+    # ------------------------------------------------------------------
+    # Alpine NAS
+    # ------------------------------------------------------------------
+    nas_nodes:
+      hosts:
+        alpine-nas:
+          ansible_host: 192.168.1.12
+          ansible_user: nasadmin
+          ansible_port: 2222
+          ansible_become_method: doas
+          ansible_python_interpreter: /usr/bin/python3
+          # Tor Hidden Service auf dem NAS: SSH-Zugang über Tor (Port 2222 → Tor Port 22)
+          hidden_service_port: 22
+          hidden_service_target: "127.0.0.1:2222"
+
+      vars:
+        admin_user: "nasadmin"
+        service_user: "nas-services"
+        service_uid: 1500
+        service_gid: 1500
+        zfs_pool_name: "datapool"
+        container_storage: "/mnt/containers"
+        syncthing_data_dir: "/mnt/syncthing"
+        samba_user: "sambauser"
+
+    # ------------------------------------------------------------------
+    # Raspberry Pi
+    # ------------------------------------------------------------------
+    pi_nodes:
+      hosts:
+        raspberry-pi:
+          ansible_host: 192.168.1.13
+          ansible_user: piadmin
+          ansible_become_method: sudo
+          ansible_python_interpreter: /usr/bin/python3
+          ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new -o ConnectTimeout=30"
+          # Tor Hidden Service auf dem Pi: SSH-Zugang über Tor
+          hidden_service_port: 22
+          hidden_service_target: "127.0.0.1:22"
+
+      vars:
+        admin_user: "piadmin"
+        kodi_user: "kodi"
+        kodi_uid: 1001
+        gpu_mem_mb: 128

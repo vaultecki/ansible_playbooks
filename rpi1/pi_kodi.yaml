@@ -1,0 +1,264 @@
+---
+# Kodi auf Raspberry Pi (Debian / Raspberry Pi OS)
+# ==================================================
+# Kodi läuft headless als systemd-Dienst unter dem "kodi"-Account direkt
+# auf dem Framebuffer via KMS/DRM – kein Desktop, kein X11 nötig.
+# Das spart RAM und Strom, was auf einem Pi besonders wichtig ist.
+#
+# Voraussetzungen:
+#   - Raspberry Pi OS Lite (Bookworm, 64-bit empfohlen) oder Debian Bookworm
+#   - pi_user.yaml muss vorher gelaufen sein (kodi-Account muss existieren)
+#   - GPU-Speicher: mindestens 128 MB (raspi-config → Performance → GPU Memory)
+#
+# Kodi-Addons und Bibliothekspfade am Ende der Datei in den vars anpassen.
+
+- name: Kodi einrichten (Raspberry Pi / Debian)
+  hosts: pi_nodes
+  become: yes
+  vars:
+    kodi_user: "kodi"
+    kodi_home: "/home/kodi"
+    kodi_userdata: "/home/kodi/.kodi/userdata"
+
+    # Medien-Freigaben die Kodi als Quellen kennen soll
+    # Lokale Pfade oder NFS/SMB-Freigaben (NFS empfohlen für NAS-Anbindung)
+    kodi_media_sources:
+      - name: "Filme"
+        path: "nfs://192.168.1.12/mnt/media/filme"   # NAS-IP anpassen
+      - name: "Serien"
+        path: "nfs://192.168.1.12/mnt/media/serien"
+      - name: "Musik"
+        path: "nfs://192.168.1.12/mnt/media/musik"
+
+    # GPU-Speicher in MB (für /boot/config.txt bzw. /boot/firmware/config.txt)
+    # 128 MB für 1080p, 256 MB für 4K-Ausgabe empfohlen
+    gpu_mem_mb: 128
+
+    # HDMI-Einstellungen – bei Problemen mit dem Display anpassen
+    hdmi_force_hotplug: true    # HDMI auch ohne aktiven Monitor aktivieren
+    hdmi_drive: 2               # 1 = DVI (kein Ton), 2 = HDMI (mit Ton)
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Raspberry Pi GPU-Speicher konfigurieren
+    # -------------------------------------------------------------------------
+
+    # Raspberry Pi OS Bookworm: config.txt liegt in /boot/firmware/
+    # Ältere Versionen: /boot/config.txt
+    - name: Pfad zur config.txt ermitteln
+      ansible.builtin.stat:
+        path: /boot/firmware/config.txt
+      register: firmware_config
+
+    - name: config.txt Pfad als Fakt setzen
+      ansible.builtin.set_fact:
+        rpi_config_path: "{{ '/boot/firmware/config.txt' if firmware_config.stat.exists else '/boot/config.txt' }}"
+
+    - name: GPU-Speicher in config.txt setzen
+      ansible.builtin.lineinfile:
+        path: "{{ rpi_config_path }}"
+        regexp: '^#?gpu_mem='
+        line: "gpu_mem={{ gpu_mem_mb }}"
+
+    - name: HDMI force hotplug setzen
+      ansible.builtin.lineinfile:
+        path: "{{ rpi_config_path }}"
+        regexp: '^#?hdmi_force_hotplug='
+        line: "hdmi_force_hotplug={{ '1' if hdmi_force_hotplug else '0' }}"
+
+    - name: HDMI Drive (Ton über HDMI) setzen
+      ansible.builtin.lineinfile:
+        path: "{{ rpi_config_path }}"
+        regexp: '^#?hdmi_drive='
+        line: "hdmi_drive={{ hdmi_drive }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Abhängigkeiten und Kodi installieren
+    # -------------------------------------------------------------------------
+
+    - name: Abhängigkeiten installieren
+      ansible.builtin.apt:
+        name:
+          - kodi                        # Kodi Basis
+          - kodi-inputstream-adaptive   # Adaptive Streaming (HLS, DASH)
+          - kodi-inputstream-rtmp       # RTMP-Streams
+          - kodi-peripheral-joystick    # Gamepad/Fernbedienung
+          - nfs-common                  # NFS-Mounts für NAS-Anbindung
+          - lirc                        # IR-Fernbedienung (optional)
+          - python3-pil                 # Für Thumbnail-Generierung
+        state: present
+        update_cache: yes
+
+    # -------------------------------------------------------------------------
+    # 3. Kodi Verzeichnisstruktur anlegen
+    # -------------------------------------------------------------------------
+
+    - name: Kodi Verzeichnisstruktur anlegen
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ kodi_user }}"
+        group: "{{ kodi_user }}"
+        mode: '0755'
+      loop:
+        - "{{ kodi_userdata }}"
+        - "{{ kodi_userdata }}/addon_data"
+        - "{{ kodi_home }}/.kodi/addons"
+        - "{{ kodi_home }}/.kodi/temp"
+
+    # -------------------------------------------------------------------------
+    # 4. Kodi Basis-Konfiguration (advancedsettings.xml)
+    # -------------------------------------------------------------------------
+
+    - name: Kodi advancedsettings.xml anlegen
+      ansible.builtin.copy:
+        dest: "{{ kodi_userdata }}/advancedsettings.xml"
+        content: |
+          <advancedsettings version="1.0">
+            <!-- RAM-Cache für Netzwerk-Streams (wichtig für NAS-Anbindung) -->
+            <cache>
+              <buffermode>1</buffermode>      <!-- 1 = Alle Quellen cachen -->
+              <memorysize>20971520</memorysize> <!-- 20 MB Cache im RAM -->
+              <readfactor>4.0</readfactor>
+            </cache>
+
+            <!-- Bibliotheks-Update beim Start -->
+            <videolibrary>
+              <updateonstartup>true</updateonstartup>
+              <cleanonstartup>false</cleanonstartup>
+            </videolibrary>
+            <musiclibrary>
+              <updateonstartup>true</updateonstartup>
+            </musiclibrary>
+
+            <!-- Log-Level: 0=Normal, 1=Debug -->
+            <loglevel>0</loglevel>
+          </advancedsettings>
+        owner: "{{ kodi_user }}"
+        group: "{{ kodi_user }}"
+        mode: '0644'
+
+    # -------------------------------------------------------------------------
+    # 5. Medienquellen in sources.xml eintragen
+    # -------------------------------------------------------------------------
+
+    - name: Kodi sources.xml mit Medienquellen anlegen
+      ansible.builtin.copy:
+        dest: "{{ kodi_userdata }}/sources.xml"
+        content: |
+          <sources>
+            <video>
+              <default pathversion="1"></default>
+              {% for source in kodi_media_sources %}
+              <source>
+                <name>{{ source.name }}</name>
+                <path pathversion="1">{{ source.path }}</path>
+                <allowsharing>true</allowsharing>
+              </source>
+              {% endfor %}
+            </video>
+            <music>
+              <default pathversion="1"></default>
+              {% for source in kodi_media_sources %}
+              {% if 'musik' in source.name | lower %}
+              <source>
+                <name>{{ source.name }}</name>
+                <path pathversion="1">{{ source.path }}</path>
+                <allowsharing>true</allowsharing>
+              </source>
+              {% endif %}
+              {% endfor %}
+            </music>
+          </sources>
+        owner: "{{ kodi_user }}"
+        group: "{{ kodi_user }}"
+        mode: '0644'
+
+    # -------------------------------------------------------------------------
+    # 6. systemd Service für Kodi anlegen
+    # -------------------------------------------------------------------------
+
+    - name: Kodi systemd Service anlegen
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/kodi.service
+        content: |
+          [Unit]
+          Description=Kodi Media Center
+          # Startet nach dem Netzwerk – wichtig für NFS-Mounts
+          After=network-online.target sound.target
+          Wants=network-online.target
+
+          [Service]
+          User={{ kodi_user }}
+          Group={{ kodi_user }}
+          Type=simple
+
+          # KMS/DRM direkt – kein X11, kein Wayland nötig
+          Environment=KODI_AE_SINK=ALSA
+          Environment=DISPLAY=
+          Environment=HOME={{ kodi_home }}
+
+          ExecStart=/usr/bin/kodi-standalone
+          Restart=on-failure
+          RestartSec=5
+
+          # Neustart begrenzen (nicht endlos loopen bei Absturz)
+          StartLimitInterval=60
+          StartLimitBurst=3
+
+          # Geräte-Zugriff
+          SupplementaryGroups=audio video input render plugdev
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      notify: Kodi systemd Service neu laden
+
+    - name: Kodi Service aktivieren und starten
+      ansible.builtin.systemd:
+        name: kodi
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    # -------------------------------------------------------------------------
+    # 7. NFS-Mounts vorbereiten (für NAS-Anbindung)
+    # -------------------------------------------------------------------------
+
+    # Kodi mountet NFS selbst über seinen VFS-Layer – kein fstab-Eintrag nötig.
+    # nfs-common stellt lediglich die nötigen Kernel-Module bereit.
+    - name: NFS Kernel-Module laden
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - nfs
+        - nfsd
+
+    - name: NFS Module dauerhaft eintragen
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/nfs.conf
+        content: |
+          nfs
+          nfsd
+        mode: '0644'
+
+    # -------------------------------------------------------------------------
+    # 8. Status ausgeben
+    # -------------------------------------------------------------------------
+
+    - name: Kodi Service-Status prüfen
+      ansible.builtin.command: systemctl status kodi
+      register: kodi_status
+      changed_when: false
+      failed_when: false
+
+    - name: Status anzeigen
+      ansible.builtin.debug:
+        msg: "{{ kodi_status.stdout_lines }}"
+
+  handlers:
+    - name: Kodi systemd Service neu laden
+      ansible.builtin.systemd:
+        daemon_reload: yes
